@@ -91,10 +91,20 @@ flattened, depth-dominance for shadowed names). From that walk it derives:
 
 - `Fields()` — the serialized json names in output order;
 - per-field nullability verdicts via the one policy `apidoc.DefaultNullability`;
-- the **sortCol whitelist**: a `sortCol:"sql_key"` struct tag on a serialized,
-  json-tagged field makes that json name a legal sort key mapping to the
-  SQL-side value. A `sortCol` tag on an unexported or embedded field is a
-  finding; on a `json:"-"` or untagged field it is silently dropped.
+- the **column bindings** (`include.Column`, exposed through the
+  `include.ColumnSource` seam as `Columns()` on every compiled node): a
+  `col:"sql_name[,sort][,filter]"` struct tag on a serialized, json-tagged
+  field binds that json name to a SQL-side column; the `sort` option makes it
+  a legal sort key (the `sortCol` whitelist below), the `filter` option a
+  legal filter column. The legacy `sortCol:"sql_name"` tag is exactly
+  `col:"sql_name,sort"`. `Type` is the field's Go type, pointers dereferenced.
+  Findings: both tags on one field; an empty name; an unknown or repeated
+  option; `filter` on a field that is not bool / number / string /
+  `time.Time`; a filterable column whose json key is `and` or `or` (reserved
+  for filter groups); a tag on an unexported or embedded field. On a
+  `json:"-"` or untagged field the tag is silently dropped.
+- the **sortCol whitelist** (`Edge.SortCols` on reverse edges): the
+  `Sortable` columns, json name → `Col`.
 
 A json-name tie that `encoding/json` would drop entirely (several candidates
 at the same depth, all tagged or all untagged) is a `duplicate json name`
@@ -135,6 +145,7 @@ func (e *EdgeBuilder[Row]) Guard(fn func(*include.Ctx, Row) bool) *EdgeBuilder[R
 func (e *EdgeBuilder[Row]) Inverse(key string) *EdgeBuilder[Row]
 func (e *EdgeBuilder[Row]) Required() *EdgeBuilder[Row]
 func (e *EdgeBuilder[Row]) Includable() *EdgeBuilder[Row]
+func (e *EdgeBuilder[Row]) Filterable() *EdgeBuilder[Row]
 func (e *EdgeBuilder[Row]) Limit(n int) *EdgeBuilder[Row]
 func (e *EdgeBuilder[Row]) Bare() *EdgeBuilder[Row]
 func (e *EdgeBuilder[Row]) Sort(key string) *EdgeBuilder[Row]
@@ -155,6 +166,7 @@ finding, never a silent no-op):
 | `Sort` | Reverse only | Wire-form key, `-` prefix = descending; must be in the target's sortCol whitelist. |
 | `Args` | Reverse, Computed | `Arg("limit", …)` is rejected — `:limit` is engine-owned. |
 | `Guard` | everything but Computed | Cheap, pure, no-DB check over the parent row; `false` hides the value in the kind's own shape (`null` for to-one, an empty collection for to-many), no fetch. Illegal with `Required()`. |
+| `Filterable` | ToOne only | Lets a filter condition traverse the edge (`include.ResolveFilter`). Deny-by-default and **independent of `Includable`**. Illegal with `Guard()`; illegal when the target has neither a filterable column nor a filterable edge (nothing to filter on). To-many edges are rejected until the filter model carries quantifiers. |
 | `Required` | ToOne only | Never-null doc fact; implies membership in `Defaults()` (constructed by `Compile`). Its two policies are only legal here. |
 | `Inverse` | everything but Computed | Cross-checked: the named edge must exist on the target, point back, run the opposite direction, and (if it declares an Inverse itself) name this edge. |
 | `Envelope` | Builder, Node, everything but Computed | Wrapper style of the edge value (`include.Envelope{Key, Pagination}`); resolved edge > target node > graph into `include.Edge.Envelope`. Findings: `Envelope` on a computed edge; `Pagination` without `Key`; `Key == Pagination`; a name needing JSON escaping (`"`, `\`, control chars). `Inverse` does not sync it. |
@@ -178,7 +190,9 @@ parent-side FK (ToOne, ToMany, InArray).
 
 `Includable` is deny-by-default: an edge is invisible to `?include=` until
 declared includable. A non-includable edge listed in `Defaults()` still
-fetches at runtime, so its target's fetcher bind is still mandatory.
+fetches at runtime, so its target's fetcher bind is still mandatory. The same
+holds for `Filterable`, which is a separate permission: a filter through an
+edge reveals facts about the target row without loading it.
 
 ## Fetcher binds
 

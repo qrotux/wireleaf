@@ -49,11 +49,30 @@ Normally implemented by `graph.Compile`'s output, not by hand. `Enrich` runs
 once per level, before `Serialize`, and may be invoked with an **empty** docs
 slice (a fully guarded-out level) — implementations must tolerate that.
 
+`ColumnSource` is the optional seam next to it:
+
+```go
+type Column struct {
+    Col        string       // SQL-side name, from the col tag; never client input
+    Type       reflect.Type // wire field type, pointers dereferenced
+    Sortable   bool         // `sort` tag option
+    Filterable bool         // `filter` tag option
+}
+type ColumnSource interface{ Columns() map[string]Column } // wire json key → Column
+func ColumnsOf(res Resource) map[string]Column           // nil when res is no ColumnSource
+```
+
+`graph.Compile`'s nodes implement it (live map — do not mutate); a hand-built
+`Resource` that does not simply has no columns.
+
 ### Edge
 
 `Edge` is a plain struct: `Target func() Resource` (a thunk, so cyclic graphs
-declare cleanly), `Many`, `Required`, `Includable` (deny-by-default — an edge
-is invisible to clients until `true`), the kind discriminants (`Backref`,
+declare cleanly), `Many`, `Required`, `Includable` and `Filterable` (both
+deny-by-default and independent of each other — an edge is invisible to
+`?include=` until `Includable`, and to a filter condition until `Filterable`;
+`graph.Compile` admits `Filterable` on to-one edges only and never with
+`Guard`), the kind discriminants (`Backref`,
 `ArrayPath`/`SubField`, `Computed`/`ComputedSchema`), loading knobs (`Limit`,
 `Bare`, `EstimatedRows`, `Sort`, `SortCols`, `Args []EdgeArg`), closures (`Guard`,
 `ForeignKey`, `ForeignKeys`) and three policy override pointers

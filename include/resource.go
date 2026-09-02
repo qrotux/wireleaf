@@ -3,6 +3,8 @@
 // graph, and hydrates the plan into wire JSON bytes.
 package include
 
+import "reflect"
+
 // ------------------------------------------------------------------ Resource
 
 // Resource is the interface every node in the include graph must implement.
@@ -31,6 +33,50 @@ type Resource interface {
 	// don't need it. It may be invoked with an EMPTY docs slice (e.g. a fully
 	// guarded-out level); implementations must tolerate it.
 	Enrich(docs []any, ctx *Ctx) error
+}
+
+// ------------------------------------------------------------------ Column
+
+// Column is the SQL-side binding of one serialized wire field. graph.Compile
+// derives it from the `col` struct tag on the node's wire struct —
+// `col:"sql_name[,sort][,filter]"`; the legacy `sortCol:"sql_name"` tag reads
+// as `col:"sql_name,sort"`. Col is a compile-time constant from the tag and
+// never client input: a client names a column by its wire json key, which is
+// the map key on ColumnSource.Columns, and only ever as a lookup key.
+type Column struct {
+	// Col is the SQL-side column name. Never empty.
+	Col string
+	// Type is the wire field's Go type with pointers dereferenced (a *string
+	// field reports string). An adapter uses it to type the value it binds;
+	// ResolveFilter uses it to judge which operators apply.
+	Type reflect.Type
+	// Sortable: a client sort key may name this column (the `sort` tag
+	// option). Edge.SortCols is the per-edge projection of these.
+	Sortable bool
+	// Filterable: a filter condition may name this column (the `filter` tag
+	// option). Deny-by-default, like Includable on an edge.
+	Filterable bool
+}
+
+// ColumnSource is the OPTIONAL Resource seam a SQL adapter and ResolveFilter
+// read: wire json key → Column. graph.Compile's nodes implement it; a
+// hand-built Resource that does not is simply a node with no columns —
+// nothing filterable on it, and nothing sortable beyond what its edges'
+// SortCols already carry.
+//
+// ACCESSOR CONTRACT: Columns returns the LIVE map of an immutable compiled
+// graph, not a copy (it sits on the per-request filter-resolution path).
+// Callers must not mutate it.
+type ColumnSource interface {
+	Columns() map[string]Column
+}
+
+// ColumnsOf returns res's columns, or nil when res is not a ColumnSource.
+func ColumnsOf(res Resource) map[string]Column {
+	if cs, ok := res.(ColumnSource); ok {
+		return cs.Columns()
+	}
+	return nil
 }
 
 // ------------------------------------------------------------------ Edge
@@ -95,6 +141,15 @@ type Edge struct {
 
 	// Includable: deny-by-default; an edge is invisible to clients until true.
 	Includable bool
+
+	// Filterable: deny-by-default; a filter condition may traverse this edge
+	// (ResolveFilter follows filterable edges only). Independent of
+	// Includable — a filter reveals facts about the target row without ever
+	// loading it, so it is its own permission. graph.Compile admits it on
+	// to-one edges only (a to-many filter needs a quantifier the filter model
+	// does not carry yet) and never together with Guard (a guard is a Go
+	// closure over the parent row, which no SQL-side filter can honour).
+	Filterable bool
 
 	// Backref is the FK field on the child pointing back to the parent.
 	// Classification/OpenAPI metadata; NOT passed to the fetcher (the fetcher

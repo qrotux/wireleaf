@@ -73,6 +73,7 @@ type edgeSettings struct {
 	inverse    string
 	required   bool
 	includable bool
+	filterable bool
 	bare       bool
 	limit      int
 	limitSet   bool
@@ -175,6 +176,22 @@ func (e *EdgeBuilder[Row]) Required() *EdgeBuilder[Row] {
 func (e *EdgeBuilder[Row]) Includable() *EdgeBuilder[Row] {
 	e.b.mustLive()
 	e.set.includable = true
+	return e
+}
+
+// Filterable lets a filter condition traverse this edge — `author.name` on a
+// Book root reaches Author's filterable columns through a filterable `author`
+// edge (deny-by-default). It is INDEPENDENT of Includable: an edge a client
+// may filter through need not be one it may include, and vice versa — a
+// filter reveals facts about the target row without loading it, so it is its
+// own permission. Compile admits it on to-one edges only for now (a to-many
+// filter needs a quantifier — any/all/none — that the filter model does not
+// carry yet), never next to Guard (a Go closure over the parent row that no
+// SQL-side filter can honour), and only when the target has something to
+// filter on (a filterable column or a filterable edge).
+func (e *EdgeBuilder[Row]) Filterable() *EdgeBuilder[Row] {
+	e.b.mustLive()
+	e.set.filterable = true
 	return e
 }
 

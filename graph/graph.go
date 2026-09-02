@@ -24,6 +24,7 @@ type compiledNode struct {
 	fields   []string                  // json names, declaration order
 	verdicts map[string]apidoc.Verdict // json name → nullability verdict
 	sortCols map[string]string         // json name → SQL-side sort key
+	cols     map[string]include.Column // json name → SQL-side binding (col tags)
 
 	defaults    []string
 	docExternal bool
@@ -42,6 +43,9 @@ type compiledNode struct {
 
 // Compile-time assertion that a compiled node is an include.Resource.
 var _ include.Resource = (*compiledNode)(nil)
+
+// Compile-time assertion that a compiled node exposes its column bindings.
+var _ include.ColumnSource = (*compiledNode)(nil)
 
 func (n *compiledNode) Name() string { return n.name }
 func (n *compiledNode) Slug() string { return n.slug }
@@ -62,6 +66,12 @@ func (n *compiledNode) Slug() string { return n.slug }
 func (n *compiledNode) Fields() []string               { return n.fields }
 func (n *compiledNode) Defaults() []string             { return n.defaults }
 func (n *compiledNode) Edges() map[string]include.Edge { return n.edges }
+
+// Columns returns the node's SQL-side column bindings keyed by wire json name
+// — the include.ColumnSource seam, derived from the `col` / `sortCol` tags.
+// LIVE map under the accessor contract above; nil when the wire declares no
+// column at all.
+func (n *compiledNode) Columns() map[string]include.Column { return n.cols }
 
 // IDOf performs the single localized any→Row assertion and delegates to the
 // boxed PrimaryKey closure (guaranteed non-nil by Compile).

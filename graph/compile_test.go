@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qrotux/wireleaf/apidoc"
 	"github.com/qrotux/wireleaf/include"
@@ -1667,5 +1668,278 @@ func TestEstimatedRowsCompiles(t *testing.T) {
 	book2.Edge("tags", Reverse[TgWire]("bookId")).Bare()
 	if _, err := b2.Compile(); err != nil {
 		t.Fatalf("bare edge on a root-only node must compile: %v", err)
+	}
+}
+
+// ------------------------------------------------------------------ col tags → Columns()
+
+type colRow struct{ ID string }
+
+// colWire exercises every col-tag shape: both options, none, one, the legacy
+// sortCol spelling, no tag, and a json:"-" field whose tag must be dropped.
+type colWire struct {
+	ID        string     `json:"id" col:"id,sort,filter"`
+	Title     string     `json:"title" col:"title"`
+	CreatedAt *time.Time `json:"createdAt,omitempty" col:"created_at,filter"`
+	Legacy    string     `json:"legacy" sortCol:"legacy_col"`
+	Plain     string     `json:"plain"`
+	Hidden    string     `json:"-" col:"hidden_col,filter"`
+}
+
+func okCol(b *Builder) *NodeHandle[colRow, colWire] {
+	return Node[colRow, colWire](b, "Col").
+		Wire(func(r colRow, c *include.Ctx) colWire { return colWire{ID: r.ID} }).
+		PrimaryKey(func(r colRow) string { return r.ID })
+}
+
+func TestCompileDerivesColumns(t *testing.T) {
+	b := NewBuilder()
+	book := okBook(b)
+	okCol(b)
+	book.Edge("cols", Reverse[colWire]("bookId"))
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	str, tm := reflect.TypeFor[string](), reflect.TypeFor[time.Time]()
+	want := map[string]include.Column{
+		"id":        {Col: "id", Type: str, Sortable: true, Filterable: true},
+		"title":     {Col: "title", Type: str},
+		"createdAt": {Col: "created_at", Type: tm, Filterable: true},
+		"legacy":    {Col: "legacy_col", Type: str, Sortable: true},
+	}
+	if got := include.ColumnsOf(g.Resource("Col")); !reflect.DeepEqual(got, want) {
+		t.Errorf("Columns() = %#v, want %#v", got, want)
+	}
+	wantSort := map[string]string{"id": "id", "legacy": "legacy_col"}
+	if got := g.Resource("Book").Edges()["cols"].SortCols; !reflect.DeepEqual(got, wantSort) {
+		t.Errorf("SortCols = %v, want %v (only sort-flagged columns are sortable)", got, wantSort)
+	}
+}
+
+// No column tag at all → a nil map, and a Resource that is no ColumnSource
+// reads as nil through ColumnsOf too.
+func TestCompileNoColTagsYieldsNilColumns(t *testing.T) {
+	b := NewBuilder()
+	okTag(b)
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if got := include.ColumnsOf(g.Resource("Tag")); got != nil {
+		t.Errorf("Columns() = %v, want nil", got)
+	}
+	if _, ok := g.Resource("Tag").(include.ColumnSource); !ok {
+		t.Error("compiled node does not implement include.ColumnSource")
+	}
+}
+
+type colBothWire struct {
+	ID string `json:"id" col:"id" sortCol:"id"`
+}
+
+type colUnknownOptWire struct {
+	ID string `json:"id" col:"id,srot"`
+}
+
+type colRepeatOptWire struct {
+	ID string `json:"id" col:"id,sort,sort"`
+}
+
+type colEmptyNameWire struct {
+	ID string `json:"id" col:",sort"`
+}
+
+type colFilterSliceWire struct {
+	ID   string   `json:"id"`
+	Tags []string `json:"tags" col:"tags,filter"`
+}
+
+type colReservedWire struct {
+	ID string `json:"id"`
+	Or string `json:"or" col:"or_col,filter"`
+}
+
+type colUnexportedWire struct {
+	ID     string `json:"id"`
+	hidden string `col:"hidden"` //nolint:unused // fixture
+}
+
+func TestCompileColTagFindings(t *testing.T) {
+	cases := []struct {
+		name  string
+		build func(b *Builder)
+		want  string
+	}{
+		{
+			name: "both col and sortCol on one field",
+			build: func(b *Builder) {
+				Node[colRow, colBothWire](b, "X").
+					Wire(func(r colRow, c *include.Ctx) colBothWire { return colBothWire{} }).
+					PrimaryKey(func(r colRow) string { return r.ID })
+			},
+			want: "carries both col and sortCol tags",
+		},
+		{
+			name: "unknown option",
+			build: func(b *Builder) {
+				Node[colRow, colUnknownOptWire](b, "X").
+					Wire(func(r colRow, c *include.Ctx) colUnknownOptWire { return colUnknownOptWire{} }).
+					PrimaryKey(func(r colRow) string { return r.ID })
+			},
+			want: `unknown option "srot"`,
+		},
+		{
+			name: "repeated option",
+			build: func(b *Builder) {
+				Node[colRow, colRepeatOptWire](b, "X").
+					Wire(func(r colRow, c *include.Ctx) colRepeatOptWire { return colRepeatOptWire{} }).
+					PrimaryKey(func(r colRow) string { return r.ID })
+			},
+			want: `repeats option "sort"`,
+		},
+		{
+			name: "empty column name",
+			build: func(b *Builder) {
+				Node[colRow, colEmptyNameWire](b, "X").
+					Wire(func(r colRow, c *include.Ctx) colEmptyNameWire { return colEmptyNameWire{} }).
+					PrimaryKey(func(r colRow) string { return r.ID })
+			},
+			want: "empty column name",
+		},
+		{
+			name: "filter on a slice field",
+			build: func(b *Builder) {
+				Node[colRow, colFilterSliceWire](b, "X").
+					Wire(func(r colRow, c *include.Ctx) colFilterSliceWire { return colFilterSliceWire{} }).
+					PrimaryKey(func(r colRow) string { return r.ID })
+			},
+			want: "filter needs a bool, number, string or time.Time field",
+		},
+		{
+			name: "filterable column named or",
+			build: func(b *Builder) {
+				Node[colRow, colReservedWire](b, "X").
+					Wire(func(r colRow, c *include.Ctx) colReservedWire { return colReservedWire{} }).
+					PrimaryKey(func(r colRow) string { return r.ID })
+			},
+			want: `filterable column "or"`,
+		},
+		{
+			name: "col tag on an unexported field",
+			build: func(b *Builder) {
+				Node[colRow, colUnexportedWire](b, "X").
+					Wire(func(r colRow, c *include.Ctx) colUnexportedWire { return colUnexportedWire{} }).
+					PrimaryKey(func(r colRow) string { return r.ID })
+			},
+			want: "col tag on unexported field hidden",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := compileFindings(t, tc.build)
+			if !hasFinding(fs, tc.want) {
+				t.Errorf("no finding containing %q; got:%s", tc.want, dumpFindings(fs))
+			}
+		})
+	}
+}
+
+// ------------------------------------------------------------------ Filterable()
+
+func TestCompileFilterableEdge(t *testing.T) {
+	b := NewBuilder()
+	book := okBook(b)
+	okCol(b)
+	// filterable, deliberately NOT includable: the two permissions are independent
+	book.Edge("col", ToOne[colWire]()).
+		ForeignKey(func(r bkRow) string { return r.AuthorID }).
+		Filterable()
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	e := g.Resource("Book").Edges()["col"]
+	if !e.Filterable {
+		t.Error("Filterable = false, want true")
+	}
+	if e.Includable {
+		t.Error("Includable = true, want false (Filterable must not imply Includable)")
+	}
+}
+
+// A filterable edge whose target has no filterable column is still legal when
+// the target has a filterable edge of its own: the condition can go one hop
+// further.
+func TestCompileFilterableEdgeThroughFilterableEdge(t *testing.T) {
+	b := NewBuilder()
+	book := okBook(b)
+	author := okAuthor(b)
+	okCol(b)
+	book.Edge("author", ToOne[AuWire]()).
+		ForeignKey(func(r bkRow) string { return r.AuthorID }).
+		Filterable()
+	author.Edge("col", ToOne[colWire]()).
+		ForeignKey(func(r auRow) string { return r.ID }).
+		Filterable()
+	if _, err := b.Compile(); err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+}
+
+func TestCompileFilterableFindings(t *testing.T) {
+	cases := []struct {
+		name  string
+		build func(b *Builder)
+		want  string
+	}{
+		{
+			name: "Filterable on a reverse edge",
+			build: func(b *Builder) {
+				book := okBook(b)
+				okCol(b)
+				book.Edge("cols", Reverse[colWire]("bookId")).Filterable()
+			},
+			want: "Filterable() is only valid on to-one edges (this is reverse)",
+		},
+		{
+			name: "Filterable on a computed edge",
+			build: func(b *Builder) {
+				book := okBook(b)
+				book.Edge("stats", Computed(apidoc.RawFragment(map[string]any{"type": "object"}))).Filterable()
+			},
+			want: "Filterable() is only valid on to-one edges (this is computed)",
+		},
+		{
+			name: "Filterable with Guard",
+			build: func(b *Builder) {
+				book := okBook(b)
+				okCol(b)
+				book.Edge("col", ToOne[colWire]()).
+					ForeignKey(func(r bkRow) string { return r.AuthorID }).
+					Guard(func(c *include.Ctx, r bkRow) bool { return true }).
+					Filterable()
+			},
+			want: "Filterable() edge cannot carry Guard()",
+		},
+		{
+			name: "Filterable to a node with nothing to filter on",
+			build: func(b *Builder) {
+				book := okBook(b)
+				okAuthor(b)
+				book.Edge("author", ToOne[AuWire]()).
+					ForeignKey(func(r bkRow) string { return r.AuthorID }).
+					Filterable()
+			},
+			want: "Filterable() edge to node Author, which has no filterable column and no filterable edge",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := compileFindings(t, tc.build)
+			if !hasFinding(fs, tc.want) {
+				t.Errorf("no finding containing %q; got:%s", tc.want, dumpFindings(fs))
+			}
+		})
 	}
 }

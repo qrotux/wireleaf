@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/qrotux/wireleaf/apidoc"
@@ -141,7 +142,7 @@ func (b *Builder) Compile() (*Graph, error) {
 		for _, msg := range sh.errs {
 			fs.add(n.name, "", "%s", msg)
 		}
-		cn.fields, cn.verdicts, cn.sortCols = sh.fields, sh.verdicts, sh.sortCols
+		cn.fields, cn.verdicts, cn.cols, cn.sortCols = sh.fields, sh.verdicts, sh.cols, sh.sortCols
 
 		checkNodeClosures(&fs, n)
 		checkEnvelope(&fs, n.name, "", n.envelope, n.envelopeSet)
@@ -245,6 +246,21 @@ func (b *Builder) Compile() (*Graph, error) {
 		for _, eb := range edgeOrder[n] {
 			if isUnbounded(eb.kind, eb.set) && !eb.set.estimatedRowsSet {
 				fs.add(n.name, eb.key, "unbounded edge %q under a to-many edge: declare EstimatedRows (the cost model otherwise assumes 100 rows per parent)", eb.key)
+			}
+		}
+	}
+
+	// --- pass C3: filterable edges must lead somewhere ----------------------
+	// A Filterable() edge whose target exposes neither a filterable column nor
+	// a filterable edge is inert: no condition can ever be written through it.
+	// Checked after pass C so every target's edges are known.
+	for _, n := range b.nodes {
+		for _, eb := range edgeOrder[n] {
+			if !eb.set.filterable || eb.target == nil || compiled[eb.target] == nil {
+				continue
+			}
+			if !hasFilterSurface(compiled[eb.target], edgeOrder[eb.target]) {
+				fs.add(n.name, eb.key, "Filterable() edge to node %s, which has no filterable column and no filterable edge", eb.target.name)
 			}
 		}
 	}
@@ -419,6 +435,19 @@ func buildEdge(
 			"Required() edge cannot carry Guard(): a guard-false parent yields null under a key the document declares required and non-null")
 	}
 
+	// --- Filterable ---------------------------------------------------------
+	// To-one only: a condition through a to-many edge needs a quantifier
+	// (any / all / none) that the filter model does not carry yet, and an
+	// inert declaration is a finding. Guard is a Go closure over the parent
+	// row; a SQL-side filter cannot honour it, so the pair would leak rows the
+	// include would have hidden.
+	if s.filterable && k.kind != include.KindToOne {
+		fs.add(name, key, "Filterable() is only valid on to-one edges (this is %s)", k.kind)
+	}
+	if s.filterable && s.guardSet {
+		fs.add(name, key, "Filterable() edge cannot carry Guard(): a guard is a Go closure over the parent row, which a SQL-side filter cannot honour")
+	}
+
 	// --- declared args vs the built-ins -------------------------------------
 	// ":limit" is engine-owned: it is coerced to an int at plan time and
 	// clamped to Edge.Limit at materialize time. A declared arg of that name
@@ -475,6 +504,7 @@ func buildEdge(
 		Many:       many,
 		Required:   s.required,
 		Includable: s.includable,
+		Filterable: s.filterable,
 		// No FK FIELD NAME is carried at all: v1 reads forward FKs through the
 		// typed ForeignKey/ForeignKeys closures, never through a field name.
 		Backref:       k.backref,
@@ -517,6 +547,22 @@ func reverseSortCols(k include.EdgeKindType, cols map[string]string) map[string]
 	return cols
 }
 
+// hasFilterSurface reports whether a filter condition can name anything on
+// cn: a filterable column, or a filterable edge leading further.
+func hasFilterSurface(cn *compiledNode, edges []*edgeBuild) bool {
+	for _, c := range cn.cols {
+		if c.Filterable {
+			return true
+		}
+	}
+	for _, eb := range edges {
+		if eb.set.filterable {
+			return true
+		}
+	}
+	return false
+}
+
 // checkOptionMatrix reports edge options that are MEANINGLESS for the declared
 // kind. A silently-inert declaration is a bug the one-validation-point design
 // must surface, so every cell outside the matrix below is a finding:
@@ -525,6 +571,7 @@ func reverseSortCols(k include.EdgeKindType, cols map[string]string) map[string]
 //	Limit   reverse + to-many    Bare    reverse + to-many
 //	Sort    reverse only         Args    reverse + computed
 //	Guard   everything but computed
+//	Filterable    to-one only (checked by the caller, with its Guard and target rules)
 //	Envelope      everything but computed
 //
 // (Required is to-one only and Inverse is forbidden on computed; both are
@@ -754,10 +801,12 @@ func checkFetchers(fs *findingList, b *Builder, edgeOrder map[*nodeSpec][]*edgeB
 // ------------------------------------------------------------------ wire shape
 
 // shape is the derived node shape: the serialized field names in walk order,
-// their nullability verdicts and the sortCol whitelist.
+// their nullability verdicts, the column bindings and the sortCol whitelist
+// (the Sortable projection of the bindings).
 type shape struct {
 	fields   []string
 	verdicts map[string]apidoc.Verdict
+	cols     map[string]include.Column
 	sortCols map[string]string
 	errs     []string
 }
@@ -765,11 +814,12 @@ type shape struct {
 // wireField is one CANDIDATE serialized field found by the walk, before
 // encoding/json's depth-dominance rule picks the winners.
 type wireField struct {
-	name    string
-	depth   int  // 0 = declared on the outer struct, 1 = one embed deep, …
-	tagged  bool // the name came from an explicit json tag (encoding/json's tie-break)
-	sortCol string
-	field   reflect.StructField
+	name   string
+	depth  int  // 0 = declared on the outer struct, 1 = one embed deep, …
+	tagged bool // the name came from an explicit json tag (encoding/json's tie-break)
+	col    include.Column
+	hasCol bool // a col / sortCol tag was present on a json-tagged field
+	field  reflect.StructField
 }
 
 // deriveShape reflects a Wire type ONCE, following encoding/json's field rules
@@ -784,8 +834,9 @@ type wireField struct {
 //
 // Winning fields are registered in walk order (encoding/json's own output
 // order) together with the nullability verdict from the ONE policy
-// (apidoc.DefaultNullability — never re-derived here) and the `sortCol`
-// whitelist (the `sortCol` walk graph now owns).
+// (apidoc.DefaultNullability — never re-derived here), the column bindings
+// from the `col` / `sortCol` tags, and the sortCol whitelist (their Sortable
+// projection).
 func deriveShape(t reflect.Type) shape {
 	s := shape{verdicts: map[string]apidoc.Verdict{}}
 	st := derefType(t)
@@ -843,11 +894,23 @@ func deriveShape(t reflect.Type) shape {
 		}
 		s.fields = append(s.fields, c.name)
 		s.verdicts[c.name] = apidoc.DefaultNullability(c.field)
-		if c.sortCol != "" {
-			if s.sortCols == nil {
-				s.sortCols = map[string]string{}
+		if c.hasCol {
+			if s.cols == nil {
+				s.cols = map[string]include.Column{}
 			}
-			s.sortCols[c.name] = c.sortCol
+			s.cols[c.name] = c.col
+			// The json keys "and" / "or" are the group keys of the JSON
+			// filter format an adapter parses; a filterable column of that
+			// name could never be addressed.
+			if c.col.Filterable && (c.name == "and" || c.name == "or") {
+				s.errs = append(s.errs, fmt.Sprintf("filterable column %q: the json keys \"and\" and \"or\" are reserved for filter groups", c.name))
+			}
+			if c.col.Sortable {
+				if s.sortCols == nil {
+					s.sortCols = map[string]string{}
+				}
+				s.sortCols[c.name] = c.col.Col
+			}
 		}
 	}
 	return s
@@ -888,12 +951,12 @@ func collectWireFields(t reflect.Type, depth int, inProgress map[reflect.Type]bo
 		// because the checks below key off the json tag, which those two cases
 		// do not carry in a distinguishable form — a client :sort() naming such
 		// a key simply misses the whitelist and falls back.
-		if col := f.Tag.Get("sortCol"); col != "" {
+		if tagName, present := colTagName(f); present {
 			switch {
 			case !f.IsExported():
-				*errs = append(*errs, fmt.Sprintf("sortCol tag on unexported field %s", f.Name))
+				*errs = append(*errs, fmt.Sprintf("%s tag on unexported field %s", tagName, f.Name))
 			case embedded:
-				*errs = append(*errs, fmt.Sprintf("sortCol tag on embedded field %s is inert (its fields are promoted)", f.Name))
+				*errs = append(*errs, fmt.Sprintf("%s tag on embedded field %s is inert (its fields are promoted)", tagName, f.Name))
 			}
 		}
 
@@ -911,12 +974,88 @@ func collectWireFields(t reflect.Type, depth int, inProgress map[reflect.Type]bo
 		if key == "" {
 			key = f.Name
 		}
-		col := f.Tag.Get("sortCol")
-		if tagName == "" || tagName == "-" {
-			col = "" // the whitelist is keyed by the json tag only
+		// The whitelist is keyed by the json tag only: an untagged or
+		// json:"-" field carries no binding, and its tag (well-formed or not)
+		// is dropped without a finding, as sortCol always was.
+		var col include.Column
+		var hasCol bool
+		if tagName != "" && tagName != "-" {
+			var cerrs []string
+			col, hasCol, cerrs = parseColTag(f)
+			*errs = append(*errs, cerrs...)
 		}
 		*out = append(*out, wireField{
-			name: key, depth: depth, tagged: tagName != "", sortCol: col, field: f,
+			name: key, depth: depth, tagged: tagName != "", col: col, hasCol: hasCol, field: f,
 		})
 	}
+}
+
+// colTagName reports which column tag a field carries — "col", or the legacy
+// "sortCol" — and whether either is present at all (an empty value counts as
+// present: it is a finding, not an absence).
+func colTagName(f reflect.StructField) (string, bool) {
+	if _, ok := f.Tag.Lookup("col"); ok {
+		return "col", true
+	}
+	if _, ok := f.Tag.Lookup("sortCol"); ok {
+		return "sortCol", true
+	}
+	return "", false
+}
+
+// filterableKinds is the closed set of wire field kinds a `filter` column may
+// have — what a closed operator set can compare without knowing the dialect.
+// time.Time is admitted by type, below.
+var filterableKinds = map[reflect.Kind]bool{
+	reflect.Bool: true, reflect.String: true,
+	reflect.Int: true, reflect.Int8: true, reflect.Int16: true, reflect.Int32: true, reflect.Int64: true,
+	reflect.Uint: true, reflect.Uint8: true, reflect.Uint16: true, reflect.Uint32: true, reflect.Uint64: true,
+	reflect.Float32: true, reflect.Float64: true,
+}
+
+var timeType = reflect.TypeFor[time.Time]()
+
+// parseColTag reads f's column binding: `col:"sql_name[,sort][,filter]"`, or
+// the legacy `sortCol:"sql_name"` (≡ `col:"sql_name,sort"`). ok=false when
+// the field carries neither. Findings are returned, not fatal: both tags on
+// one field, an empty name, an unknown or repeated option, and `filter` on a
+// field whose type the operator set cannot compare.
+func parseColTag(f reflect.StructField) (c include.Column, ok bool, errs []string) {
+	raw, hasCol := f.Tag.Lookup("col")
+	legacy, hasLegacy := f.Tag.Lookup("sortCol")
+	switch {
+	case hasCol && hasLegacy:
+		return c, false, []string{fmt.Sprintf("field %s carries both col and sortCol tags (declare one)", f.Name)}
+	case hasLegacy:
+		raw = legacy + ",sort"
+	case !hasCol:
+		return c, false, nil
+	}
+	name, opts, _ := strings.Cut(raw, ",")
+	if name == "" {
+		return c, false, []string{fmt.Sprintf("col tag on field %s has an empty column name", f.Name)}
+	}
+	c = include.Column{Col: name, Type: derefType(f.Type)}
+	if opts != "" {
+		for _, o := range strings.Split(opts, ",") {
+			switch o {
+			case "sort":
+				if c.Sortable {
+					errs = append(errs, fmt.Sprintf("col tag on field %s repeats option %q", f.Name, o))
+				}
+				c.Sortable = true
+			case "filter":
+				if c.Filterable {
+					errs = append(errs, fmt.Sprintf("col tag on field %s repeats option %q", f.Name, o))
+				}
+				c.Filterable = true
+			default:
+				errs = append(errs, fmt.Sprintf("col tag on field %s has unknown option %q (sort, filter)", f.Name, o))
+			}
+		}
+	}
+	if c.Filterable && !filterableKinds[c.Type.Kind()] && c.Type != timeType {
+		errs = append(errs, fmt.Sprintf("col tag on field %s: filter needs a bool, number, string or time.Time field (got %s)", f.Name, f.Type))
+	}
+	return c, true, errs
 }
