@@ -1,0 +1,18 @@
+version: "2"
+linters:
+  settings:
+    staticcheck:
+      checks:
+        - all
+        # S1016 wants `AuthorWire(row)` instead of a field-by-field literal in a
+        # Wire func. The literal is the point: rows and wires are separate types
+        # that are meant to diverge, and the mapping is what the examples teach.
+        - -S1016
+  exclusions:
+    rules:
+      # include.Code constants (INVALID_INCLUDE, ...) are named after the wire
+      # codes they carry, so a grep for the code a client saw lands on the Go
+      # constant. Idiomatic CamelCase would break that link.
+      - path: include/errors\.go
+        linters: [staticcheck]
+        text: "ST1003"

@@ -1,0 +1,176 @@
+package include
+
+import (
+	"context"
+	"sync"
+)
+
+// Registry locates fetchers for resources at hydrate time.
+type Registry interface {
+	// FetchByIDs returns the forward-batch fetcher for r, if one is registered.
+	FetchByIDs(r Resource) (FetchByIDs, bool)
+	// FetchByParents returns the batched multi-parent reverse fetcher for r, if
+	// one is registered.
+	FetchByParents(r Resource) (FetchByParents, bool)
+}
+
+// EdgeQuery carries the resolved per-edge query handed to a batched reverse
+// fetcher. Every field is already validated and resolved by the engine; a
+// fetcher applies it as given and never re-reads client input.
+type EdgeQuery struct {
+	// Limit is the effective per-parent top-N: clamp(client :limit, 1,
+	// Edge.Limit), or Edge.Limit when the client supplied none. A BARE edge
+	// resolves to 0, meaning fetch-all (and its HasMore is ignored).
+	//
+	// A NON-BARE edge whose Edge.Limit is 0 does NOT mean fetch-all: 0 reads as
+	// "unset" and the engine substitutes the DEFAULT of 20. graph.Compile
+	// always writes an explicit Limit, so this only bites a HAND-BUILT
+	// include.Edge that left the field zero — set Edge.Bare to fetch all.
+	//
+	// The limit+1 probe belongs to the FETCHER: it decides HasMore (typically
+	// by selecting Limit+1 rows) and returns at most Limit rows per parent.
+	// The engine truncates defensively if more come back.
+	Limit int
+	// Sort is the resolved SQL-side sort key ('-' prefix = descending, "" =
+	// the fetcher's own default order). It has passed the Edge.SortCols
+	// whitelist, so it is never a raw client string.
+	Sort string
+	// Args are the remaining declared edge arguments, validated at plan time
+	// and passed verbatim. The built-ins ("limit", "sort") are NOT included —
+	// they are already resolved into Limit/Sort. nil when nothing remains.
+	// The values are shared with the plan — fetchers must not mutate them.
+	Args map[string]any
+}
+
+// ParentRows is one parent's slice of a batched reverse fetch result.
+type ParentRows struct {
+	// Rows are that parent's child rows in the fetcher's sort order, at most
+	// EdgeQuery.Limit of them when Limit > 0.
+	Rows []any
+	// HasMore reports whether more rows exist beyond Rows (the fetcher's own
+	// limit+1 probe). Ignored for bare edges, which never emit an envelope.
+	HasMore bool
+	// NextCursor is an OPAQUE continuation token. The engine copies it into
+	// the envelope verbatim when non-empty and never interprets it; an empty
+	// value omits the "nextCursor" key entirely. Ignored for bare edges.
+	NextCursor string
+}
+
+// FetchByParents is the batched reverse fetcher: ONE call covers every parent
+// id of a level, returning each parent's rows keyed by parent id. A parent
+// absent from the map has no children (an empty collection, never null); keys
+// that were not requested are dropped by the engine.
+//
+// Implementations MUST be safe for concurrent use: the engine may call the
+// same fetcher from several goroutines for sibling edges (the v1 engine still
+// loads sibling edges sequentially, but the contract is concurrency-safe).
+type FetchByParents func(c *Ctx, parentIDs []string, q EdgeQuery) (map[string]ParentRows, error)
+
+// MarshalFunc serializes one wire value into JSON bytes.
+type MarshalFunc func(v any) ([]byte, error)
+
+// Ctx is the per-request context threaded through every engine call.
+//
+// One Ctx is shared by every fetcher of a request and MUST be treated as
+// read-only by them: the engine never mutates it after construction, and
+// fetchers may be invoked concurrently. Anything a fetcher needs to write per
+// request belongs behind its own synchronization in Env.
+//
+// The one sanctioned exception is the request-scoped loader cache reached
+// through LoaderState: it is unexported, mutex-protected and concurrent-safe
+// by construction, so graph.Loader can keep per-request state without any
+// application-visible mutation of Ctx. The zero Ctx value is usable — the
+// cache initializes lazily under the mutex.
+//
+// The second exception is the row counter behind Rows: Materialize
+// increments it (single-threaded, no lock) as levels are serialized, so the
+// application can read the real cost of a request after hydration.
+//
+// Ctx contains a mutex: always pass *Ctx, never copy it by value.
+type Ctx struct {
+	// Context is the request Go context passed to fetchers (cancellation,
+	// tracing). nil is mapped to context.Background().
+	Context context.Context
+	// Registry locates fetchers; nil is valid only for plans without child edges.
+	Registry Registry
+	// Env carries application per-request state (viewer identity, locale,
+	// base URLs, request-scoped caches). The engine never reads it; the
+	// closures installed by graph.Serialize and graph.Enrich, Edge.Guard and
+	// fetchers assert it to the application's own type.
+	Env any
+	// Marshal serializes wire values; nil → MarshalNoEscape, i.e. raw `&`,
+	// `<`, `>` (JSON.stringify-parity bytes) WITHOUT any opt-in. Install
+	// MarshalStd to get encoding/json's HTML escaping back.
+	//
+	// SECURITY: the default output is for application/json response bodies.
+	// It is NOT safe to embed in HTML (an SSR <script> bootstrap, a mail
+	// template) — a string value containing `</script>` would terminate the
+	// script context. Escape at the embedding site, or install MarshalStd.
+	Marshal MarshalFunc
+	// Policies is the engine-wide materialize-time policy fallback set
+	// (missing-required, missing-foreign, fetcher-contract). The zero value
+	// is the permissive default for every policy; a per-edge override on
+	// Edge wins where set. Set it at construction — the read-only contract
+	// above applies.
+	Policies Policies
+
+	// mu guards loaders — the only mutable state on Ctx.
+	mu sync.Mutex
+	// loaders holds request-scoped per-loader state, keyed by loader identity
+	// (a *graph.Loader pointer). Created lazily on first use.
+	loaders map[any]any
+
+	// rows counts documents materialized by this request (root included);
+	// maxRows is the budget copied off the root PlanNode when Materialize
+	// enters the root level (0 = unlimited).
+	rows, maxRows int
+}
+
+// Rows reports how many documents Materialize has serialized for this
+// request so far, root documents included — the actual-cost counterpart of
+// PlanNode.Cost, for cost-based rate limiting.
+func (c *Ctx) Rows() int { return c.rows }
+
+// LoaderState returns this request's state object for key, creating it with mk
+// on first use. The map and the entry are created under Ctx's mutex, so the
+// zero Ctx value works and concurrent callers all observe the same object.
+// mk runs under the Ctx mutex — it must only allocate, never touch the Ctx.
+//
+// Library-internal plumbing for graph.Loader; NOT for application use. The
+// method is exported only because graph lives in another package.
+func (c *Ctx) LoaderState(key any, mk func() any) any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.loaders == nil {
+		c.loaders = make(map[any]any)
+	}
+	st, ok := c.loaders[key]
+	if !ok {
+		st = mk()
+		c.loaders[key] = st
+	}
+	return st
+}
+
+// StdContext returns the request Go context, falling back to
+// context.Background().
+//
+// It has NO caller inside wireleaf — it is EXTERNAL API, and deliberately so.
+// Fetchers, MapFns and EnrichFns live in the application, receive only a *Ctx,
+// and need a context.Context to reach the database and to honor cancellation
+// (graph.Loader's fetch contract names this method for exactly that). Do not
+// remove it as unused.
+func (c *Ctx) StdContext() context.Context {
+	if c.Context != nil {
+		return c.Context
+	}
+	return context.Background()
+}
+
+// marshal serializes v via Marshal, defaulting to MarshalNoEscape.
+func (c *Ctx) marshal(v any) ([]byte, error) {
+	if c.Marshal != nil {
+		return c.Marshal(v)
+	}
+	return MarshalNoEscape(v)
+}

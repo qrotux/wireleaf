@@ -1,0 +1,14 @@
+/.idea/
+.DS_Store
+# Superpowers working artifacts (plans, snapshots) — not part of the library.
+/.superpowers/
+# Local working materials (specs drafts, discussion notes, plan artifacts).
+/basic/
+*.test
+/dist/
+# `go build ./examples/...` drops the example binary in the repo root.
+/basic.bin
+/.claude/
+# Local workspace: each developer keeps their own, see README "Development".
+go.work
+go.work.sum
