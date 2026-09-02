@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/qrotux/wireleaf/apidoc"
@@ -260,6 +259,11 @@ func (b *Builder) Compile() (*Graph, error) {
 			if !eb.set.filterable || eb.target == nil || compiled[eb.target] == nil {
 				continue
 			}
+			// Filterable on these kinds is already a finding from buildEdge;
+			// a second one about the surface would just repeat it.
+			if eb.kind == include.KindInArray || eb.kind == include.KindComputed {
+				continue
+			}
 			if !hasFilterSurface(compiled[eb.target], eb.target, edgeOrder, compiled) {
 				fs.add(n.name, eb.key, "Filterable() edge to node %s, which has no filterable column and no filterable edge", eb.target.name)
 			}
@@ -437,13 +441,17 @@ func buildEdge(
 	}
 
 	// --- Filterable ---------------------------------------------------------
-	// To-one only: a condition through a to-many edge needs a quantifier
-	// (any / all / none) that the filter model does not carry yet, and an
-	// inert declaration is a finding. Guard is a Go closure over the parent
-	// row; a SQL-side filter cannot honour it, so the pair would leak rows the
-	// include would have hidden.
-	if s.filterable && k.kind != include.KindToOne {
-		fs.add(name, key, "Filterable() is only valid on to-one edges (this is %s)", k.kind)
+	// Legal where a SQL-side join or correlated subquery exists behind the
+	// edge: to-one (a join), reverse and forward to-many (an EXISTS with the
+	// quantifier the client puts on the hop — include.FilterStep.Quant, which
+	// ResolveFilter demands). In-array edges are positional splices into the
+	// parent's array with no relation behind them, computed edges have no
+	// target; both are inert declarations, and an inert declaration is a
+	// finding. Guard is a Go closure over the parent row; a SQL-side filter
+	// cannot honour it, so the pair would leak rows the include would have
+	// hidden.
+	if s.filterable && (k.kind == include.KindInArray || k.kind == include.KindComputed) {
+		fs.add(name, key, "Filterable() is not valid on %s edges (to-one, reverse and to-many only)", k.kind)
 	}
 	if s.filterable && s.guardSet {
 		fs.add(name, key, "Filterable() edge cannot carry Guard(): a guard is a Go closure over the parent row, which a SQL-side filter cannot honour")
@@ -605,7 +613,7 @@ func hasFilterSurface(
 //	Limit   reverse + to-many    Bare    reverse + to-many
 //	Sort    reverse only         Args    reverse + computed
 //	Guard   everything but computed
-//	Filterable    to-one only (checked by the caller, with its Guard and target rules)
+//	Filterable    to-one, reverse, to-many (checked by the caller, with its Guard and target rules)
 //	Envelope      everything but computed
 //
 // (Required is to-one only and Inverse is forbidden on computed; both are
@@ -974,7 +982,7 @@ func collectWireFields(t reflect.Type, depth int, inProgress map[reflect.Type]bo
 		embedded := f.Anonymous && tagName == "" && tag != "-" &&
 			elem != nil && elem.Kind() == reflect.Struct
 
-		// A sortCol tag on a field that is never serialized under its own name
+		// A col / sortCol tag on a field that is never serialized under its own name
 		// is inert, and an inert declaration is a finding. Checked BEFORE the
 		// embed recursion so an unexported embed is flagged too.
 		//
@@ -985,12 +993,12 @@ func collectWireFields(t reflect.Type, depth int, inProgress map[reflect.Type]bo
 		// because the checks below key off the json tag, which those two cases
 		// do not carry in a distinguishable form — a client :sort() naming such
 		// a key simply misses the whitelist and falls back.
-		if tagName, present := colTagName(f); present {
+		if colTag, present := colTagName(f); present {
 			switch {
 			case !f.IsExported():
-				*errs = append(*errs, fmt.Sprintf("%s tag on unexported field %s", tagName, f.Name))
+				*errs = append(*errs, fmt.Sprintf("%s tag on unexported field %s", colTag, f.Name))
 			case embedded:
-				*errs = append(*errs, fmt.Sprintf("%s tag on embedded field %s is inert (its fields are promoted)", tagName, f.Name))
+				*errs = append(*errs, fmt.Sprintf("%s tag on embedded field %s is inert (its fields are promoted)", colTag, f.Name))
 			}
 		}
 
@@ -1037,33 +1045,34 @@ func colTagName(f reflect.StructField) (string, bool) {
 	return "", false
 }
 
-// filterableKinds is the closed set of wire field kinds a `filter` column may
-// have — what a closed operator set can compare without knowing the dialect.
-// time.Time is admitted by type, below.
-var filterableKinds = map[reflect.Kind]bool{
-	reflect.Bool: true, reflect.String: true,
-	reflect.Int: true, reflect.Int8: true, reflect.Int16: true, reflect.Int32: true, reflect.Int64: true,
-	reflect.Uint: true, reflect.Uint8: true, reflect.Uint16: true, reflect.Uint32: true, reflect.Uint64: true,
-	reflect.Float32: true, reflect.Float64: true,
-}
-
-var timeType = reflect.TypeFor[time.Time]()
-
 // parseColTag reads f's column binding: `col:"sql_name[,sort][,filter]"`, or
 // the legacy `sortCol:"sql_name"` (≡ `col:"sql_name,sort"`). ok=false when
 // the field carries neither. Findings are returned, not fatal: both tags on
-// one field, an empty name, an empty, unknown or repeated option, and
-// `filter` on a field whose type the operator set cannot compare. Every
-// finding names the tag the field actually carries.
+// one field, an empty name, an empty, unknown or repeated option, options
+// inside a sortCol value, and `filter` on a field whose type the operator set
+// cannot compare. Every finding names the tag the field actually carries.
+//
+// The legacy tag becomes a Column DIRECTLY and never enters the option
+// grammar. Rewriting it as `legacy + ",sort"` — what this used to do — made a
+// COMMA inside a sortCol value parse as an option list, so `sortCol:"a,filter"`
+// silently granted `filter`: a read grant on the value (see docs/include.md →
+// Filters) that no sortCol declaration ever asked for. A sortCol value is one
+// SQL name and nothing else; a comma anywhere in it is a finding.
 func parseColTag(f reflect.StructField) (c include.Column, ok bool, errs []string) {
 	raw, hasCol := f.Tag.Lookup("col")
 	legacy, hasLegacy := f.Tag.Lookup("sortCol")
-	tag := "col"
+	const tag = "col"
 	switch {
 	case hasCol && hasLegacy:
 		return c, false, []string{fmt.Sprintf("field %s carries both col and sortCol tags (declare one)", f.Name)}
 	case hasLegacy:
-		tag, raw = "sortCol", legacy+",sort"
+		switch {
+		case legacy == "":
+			return c, false, []string{fmt.Sprintf("sortCol tag on field %s has an empty column name", f.Name)}
+		case strings.Contains(legacy, ","):
+			return c, false, []string{fmt.Sprintf("sortCol tag on field %s must not contain options (use col:%q)", f.Name, "name,sort,…")}
+		}
+		return include.Column{Col: legacy, Type: derefType(f.Type), Sortable: true}, true, nil
 	case !hasCol:
 		return c, false, nil
 	}
@@ -1092,7 +1101,10 @@ func parseColTag(f reflect.StructField) (c include.Column, ok bool, errs []strin
 			}
 		}
 	}
-	if c.Filterable && !filterableKinds[c.Type.Kind()] && c.Type != timeType {
+	// include.FilterableType is the ONE definition of what a filter column may
+	// be: admitting a type here that the resolver then refuses would be a grant
+	// that grants nothing.
+	if c.Filterable && !include.FilterableType(c.Type) {
 		errs = append(errs, fmt.Sprintf("%s tag on field %s: filter needs a bool, number, string or time.Time field (got %s)", tag, f.Name, f.Type))
 	}
 	return c, true, errs

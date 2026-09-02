@@ -184,11 +184,13 @@ func (e *EdgeBuilder[Row]) Includable() *EdgeBuilder[Row] {
 // edge (deny-by-default). It is INDEPENDENT of Includable: an edge a client
 // may filter through need not be one it may include, and vice versa — a
 // filter reveals facts about the target row without loading it, so it is its
-// own permission. Compile admits it on to-one edges only for now (a to-many
-// filter needs a quantifier — any/all/none — that the filter model does not
-// carry yet), never next to Guard (a Go closure over the parent row that no
-// SQL-side filter can honour), and only when the target has something to
-// filter on (a filterable column or a filterable edge).
+// own permission. Compile admits it on to-one, reverse and to-many edges (a
+// to-many hop needs a quantifier — any/all/none — on the client's
+// include.FilterStep, which ResolveFilter demands and Compile only permits),
+// never on an in-array or computed edge, never next to Guard (a Go closure
+// over the parent row that no SQL-side filter can honour), and only when the
+// target has something to filter on (a filterable column or a filterable
+// edge).
 func (e *EdgeBuilder[Row]) Filterable() *EdgeBuilder[Row] {
 	e.b.mustLive()
 	e.set.filterable = true

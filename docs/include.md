@@ -76,7 +76,8 @@ sorting or filtering on an entry.
 declare cleanly), `Many`, `Required`, `Includable` and `Filterable` (both
 deny-by-default and independent of each other — an edge is invisible to
 `?include=` until `Includable`, and to a filter condition until `Filterable`;
-`graph.Compile` admits `Filterable` on to-one edges only and never with
+`graph.Compile` admits `Filterable` on to-one, reverse and to-many edges —
+never on in-array or computed ones — and never with
 `Guard`), the kind discriminants (`Backref`,
 `ArrayPath`/`SubField`, `Computed`/`ComputedSchema`), loading knobs (`Limit`,
 `Bare`, `EstimatedRows`, `Sort`, `SortCols`, `Args []EdgeArg`), closures (`Guard`,
@@ -358,11 +359,16 @@ type FilterOp string // OpEq, OpNe, OpLt, OpLte, OpGt, OpGte, OpIn, OpNin
 type Filter interface{ /* sealed */ }
 type FilterAnd []Filter
 type FilterOr  []Filter
+type Quant string // QuantAny "any", QuantAll "all", QuantNone "none"
+type FilterStep struct {
+    Key   string // edge key as declared
+    Quant Quant  // "" on a to-one hop; required on a to-many hop
+}
 type FilterCond struct {
-    Path  []string // edge keys from the root, outermost first; nil = root column
-    Field string   // wire json key of the column
+    Path  []FilterStep // hops from the root, outermost first; nil = root column
+    Field string       // wire json key of the column
     Op    FilterOp
-    Value any      // verbatim from the parser; the engine never coerces it
+    Value any          // verbatim from the parser; the engine never coerces it
 }
 
 func ResolveFilter(root Resource, f Filter, opts Options) (ResolvedFilter, error)
@@ -375,40 +381,99 @@ type ResolvedCond struct {
     Column Column      // SQL-side binding on the last hop's target (or the root)
     Op     FilterOp
     Value  any
+    Node   Resource    // the node Column sits on — the root, or the last hop's To
 }
-type FilterHop struct{ Key string; Edge Edge; From, To Resource }
+type FilterHop struct{ Key string; Edge Edge; Quant Quant; From, To Resource }
 ```
+
+`ResolveFilter` returns the three concrete value types only, never pointers,
+although it accepts pointer forms as input; an adapter's type switch needs no
+pointer cases and may treat `default` as a programming error.
 
 Resolution rules:
 
-- every hop must be a `Filterable` **to-one** edge (`graph.Compile` admits
-  `Filterable()` on to-one edges only, and `ResolveFilter` re-checks it, so a
-  hand-built to-many edge marked filterable is refused too);
+- every hop must be a `Filterable` edge; a **to-many** hop must carry a
+  quantifier (`any` / `all` / `none`) and a **to-one** hop must not; the
+  path may cross at most `Limits.MaxFilterMany` to-many hops;
 - the leaf must be a `Filterable` column of the node the path reaches
   (`ColumnSource`); a root that is no `ColumnSource` has no filterable column;
 - `eq`/`ne`/`in`/`nin` apply to every column, `lt`/`lte`/`gt`/`gte` to
   numbers, strings and `time.Time` — never to bool;
 - an empty `And`/`Or`, or a nil member, is rejected (its truth value differs
-  between dialects);
+  between dialects), and reported at the node's position in the tree —
+  `"and[1]"`, `"or[0].and[2]"`, `""` for the root group itself;
 - `len(Path) > Limits.MaxFilterDepth` and more than `Limits.MaxFilterNodes`
   conditions + groups are `FILTER_TOO_DEEP`; everything else the graph does
   not admit is `INVALID_FILTER` with `Path` = `"author.name"`, the path up to
-  the offending edge, or `"author.name:like"` for an operator fault.
+  the offending hop (`"reviews"` for a to-many hop without a quantifier),
+  `"author:any"` / `"reviews:some"` for a quantifier fault, or
+  `"author.name:like"` for an operator fault. Text that was not found in the
+  graph (an unknown key, field, operator or quantifier) is echoed bounded to
+  16 bytes plus `…`; a name the graph does know goes back whole.
 
 A handler resolves before it fetches (the same 400-before-fetch rule as
 `ResolvePlan`) and hands the result to its `RootFetcher` through
 `QueryArgs.Where`. The client's spelling never reaches SQL text: an adapter
 walks `Hops` and `Column.Col`, both compile-time constants from struct tags.
 
+### Quantifiers
+
+A to-many hop asks how one parent's children decide the parent's fate. The
+core carries the answer on `FilterHop.Quant`; the adapter must reproduce
+these templates, `cond` being the leaf comparison and `child.fk = parent.id`
+the correlation it binds for the hop:
+
+| Quant | Template | Empty relation |
+| --- | --- | --- |
+| `any` | `EXISTS (SELECT 1 FROM child WHERE child.fk = parent.id AND cond)` | does not hold |
+| `all` | `NOT EXISTS (SELECT 1 FROM child WHERE child.fk = parent.id AND NOT cond)` | holds |
+| `none` | `NOT EXISTS (SELECT 1 FROM child WHERE child.fk = parent.id AND cond)` | holds |
+
+Nested to-many hops nest the templates (`reviews(all).author.works(none).title`
+is a `NOT EXISTS` whose body joins `author` and contains another `NOT
+EXISTS`) — the inner template stands in for `cond` of the outer one, so under
+`all` it is negated as a whole. A to-one hop inside a subquery is a plain
+inner join, so a child whose foreign key is `NULL` drops out of the subquery
+body: it is neither a match (under `any` / `none`) nor a violation (under
+`all`), and `all` holds vacuously over such children — the reading the
+empty-relation table assumes. `Bare()` and
+`Limit(n)` on an edge govern include loading only — a filter's `EXISTS` sees
+every child. SQL three-valued logic applies as-is: a child whose
+column is `NULL` makes `cond` — and so `NOT cond` — `NULL`, so that child is
+neither selected under `any` / `none` nor a violation under `all`; the core
+neither touches values nor compensates for it.
+
+Syntax is the application parser's. A recommended JSON spelling: no suffix is
+`any` (`{"reviews.rating": {"gt": 4}}`), `*` is `all`
+(`{"reviews.rating*": {"gt": 4}}`), `~` is `none` (`{"reviews.rating~":
+{"gt": 4}}`); the suffix sits on the field when the path has exactly one
+to-many segment and on the segment when it has several
+(`reviews~.author.works*.title`).
+
 Reserved keys: the JSON format the adapter is expected to parse uses `and` /
 `or` as group keys, so `graph.Compile` refuses a filterable column whose json
-key is one of them.
+key is one of them — and a `Filterable()` EDGE keyed `and` or `or` just the
+same, since a hop and a group sit in the same key position.
+
+What `Filterable` grants. A filter is SQL the adapter builds from the graph
+binding; it never calls the target's fetcher. Row-level scoping that lives in
+a `FetchIDs` / `FetchParents` closure — tenancy, soft-delete, an ACL — is
+therefore NOT applied inside a filter's `EXISTS`, and neither is `Guard`
+(which is why `Filterable` + `Guard` is a compile finding). Put such scoping
+in the adapter's join binding, or do not make the edge filterable. A
+`filter` column is likewise a READ grant on its value: `lt` / `gt` turn any
+list endpoint into a binary-search oracle for it, even on a node a client
+can never `?include=`. Grant `filter` as you would grant a field in the
+response.
 
 What the resolved filter does NOT carry, and the adapter therefore owns:
 the table behind each `Resource` (bind it by `Name()`), the join behind each
 hop (bind it by `(From.Name(), Key)` — `include.Edge` deliberately carries no
-foreign-key column name, only the typed closures), and the coercion of
-`Value` to `Column.Type`. `graph.Compile` validates the graph, not those
+foreign-key column name, only the typed closures; `Edge.Backref` is the
+wire-side classification name of the child's back-reference, never a SQL
+column — do not join on it), the shape of `Value` for `in` / `nin` (the core
+admits any value; the parser and adapter agree on the collection type between
+themselves), and the coercion of `Value` to `Column.Type`. `graph.Compile` validates the graph, not those
 bindings; an adapter should check at start-up that every filterable edge and
 column of every root it serves has one.
 
@@ -462,11 +527,20 @@ opts := include.Options{Limits: include.Limits{
 | `MaxNodes` | 50 | number of CLIENT edges in the tree | `INCLUDE_TOO_DEEP` |
 | `MaxCost` | 5000 | static row estimate for ONE root document, defaults included | `INCLUDE_TOO_EXPENSIVE` |
 | `MaxRows` | 50000 | rows actually materialized by one hydrate call, root included | `INCLUDE_BUDGET_EXCEEDED` |
-| `MaxFilterDepth` | 2 | edge hops in one filter condition (`author.name` = 1) | `FILTER_TOO_DEEP` |
+| `MaxFilterDepth` | 4 | edge hops in one filter condition (`author.name` = 1) | `FILTER_TOO_DEEP` |
+| `MaxFilterMany` | 2 | to-many hops in one filter condition (each is a nested `EXISTS`) | `FILTER_TOO_DEEP` |
 | `MaxFilterNodes` | 32 | conditions + groups in one filter tree | `FILTER_TOO_DEEP` |
 
-A zero `MaxCost`, `MaxRows`, `MaxFilterDepth` or `MaxFilterNodes` means the
-default, so a literal that names only `MaxDepth` and `MaxNodes` keeps working.
+`MaxFilterMany` is counted within `MaxFilterDepth`, and at the defaults (2
+within 4) it refuses the **third** to-many hop of one path — two nested
+`EXISTS` is already a query most planners handle badly — while
+`MaxFilterDepth` goes on bounding the path as a whole. Raise it, up to
+`MaxFilterDepth`, to allow more deeply nested `EXISTS`; lower it to
+`MaxFilterMany: 1` to allow one `EXISTS` around a chain of joins.
+
+A zero `MaxCost`, `MaxRows`, `MaxFilterDepth`, `MaxFilterMany` or
+`MaxFilterNodes` means the default, so a literal that names only `MaxDepth`
+and `MaxNodes` keeps working.
 `include.DefaultOptions` is `{Limits: DefaultLimits}`.
 
 `MaxCost` is computed by `ResolvePlan` after `exclude` is applied: every plan
@@ -586,8 +660,8 @@ Planning and facade failures are `*include.Error{Code, Path, Status}`
 | `INCLUDE_TOO_DEEP` | 400 | `MaxDepth` **or** `MaxNodes` exceeded — one code for both, the message distinguishes |
 | `INCLUDE_TOO_EXPENSIVE` | 400 | the plan's static row estimate (`PlanNode.Cost`) exceeds `MaxCost`; the message carries both numbers |
 | `INCLUDE_BUDGET_EXCEEDED` | 400 | rows materialized exceed `MaxRows` — mid-hydration, or up front in `HydrateByQuery` as `Cost × QueryArgs.Limit` |
-| `INVALID_FILTER` | 400 | `ResolveFilter`: unknown/non-filterable edge or column, root without columns, empty group, unknown operator or operator illegal for the column type (`Path` is `"a.b.field"`, the path up to the bad edge, or `"a.b.field:op"`) |
-| `FILTER_TOO_DEEP` | 400 | `MaxFilterDepth` **or** `MaxFilterNodes` exceeded; for a too-deep path `Path` is the client path truncated to `MaxFilterDepth+1` segments plus `…` (a node-count fault carries an empty `Path`) |
+| `INVALID_FILTER` | 400 | `ResolveFilter`: unknown/non-filterable edge or column, root without columns, empty group, a to-many hop without a quantifier, a quantifier on a to-one hop, an unknown quantifier, unknown operator or operator illegal for the column type. For a leaf fault `Path` is `"a.b.field"`, the path up to the bad edge, `"a.b.field:op"`, or `"a.b:quant"`; for a **structural** fault (empty group, nil member, nil node) it is the node's position in the tree — `"and[1]"`, `"or[0].and[2]"` — since group members carry no names. The root has no position: an empty root-level group reports `""` |
+| `FILTER_TOO_DEEP` | 400 | `MaxFilterDepth`, `MaxFilterMany` **or** `MaxFilterNodes` exceeded; for a too-deep or too-many path `Path` is the client path's keys cut to `MaxFilterDepth+1` segments, each one itself bounded to 16 bytes plus `…`, with a trailing `…` only when segments were actually dropped — so a too-many-hops path (bounded by `MaxFilterDepth` already) always comes back whole and unmarked (a node-count fault carries an empty `Path`) |
 | `NOT_FOUND` | 404 | `HydrateByID`'s fetch returned a nil doc |
 
 Materialize-time failures — a fetcher error, a missing registration, a strict

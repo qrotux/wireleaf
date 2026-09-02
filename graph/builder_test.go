@@ -316,6 +316,7 @@ func TestBuilderDeadAfterCompile(t *testing.T) {
 		"Root":       func() { b.Root(book) },
 		"node chain": func() { book.Wire(nil) },
 		"edge chain": func() { edgeB.Required() },
+		"Filterable": func() { edgeB.Filterable() },
 	} {
 		func() {
 			defer func() {

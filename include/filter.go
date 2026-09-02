@@ -13,10 +13,10 @@
 //   - Values are carried verbatim (any). Coercing "2024-01-01" into a
 //     time.Time is the parser's job and binding it is the adapter's; the
 //     engine judges the OPERATOR against the column's type, not the value.
-//   - v1 traverses TO-ONE edges only: graph.Compile admits Filterable() on
-//     nothing else, and resolution refuses a to-many hop on its own account
-//     too (include is hand-implementable). Quantifiers (any / all / none) are
-//     the extension point, not a special case.
+//   - A to-many hop carries a QUANTIFIER (any / all / none) on its FilterStep;
+//     the adapter turns each one into a correlated EXISTS / NOT EXISTS. A
+//     to-one hop carries none. Limits.MaxFilterMany bounds the to-many hops
+//     of one path (each is a nested subquery), MaxFilterDepth all hops.
 //   - Generating SQL (joins, EXISTS) is the adapter's job, outside this
 //     module. ResolvedCond.Hops is what it walks.
 
@@ -24,6 +24,7 @@ package include
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -54,11 +55,30 @@ type FilterAnd []Filter
 // FilterOr holds conditions of which at least one must hold. Never empty.
 type FilterOr []Filter
 
-// FilterCond is one leaf condition in WIRE terms: edge keys from the root
+// Quant is the quantifier a condition applies at a to-many hop: how one
+// parent's children decide the parent's fate. On an EMPTY relation `all` and
+// `none` hold and `any` does not — the mathematical reading, the same one
+// Payload uses; an adapter must reproduce it (see docs/include.md → Filters).
+type Quant string
+
+const (
+	QuantAny  Quant = "any"  // at least one child satisfies the condition
+	QuantAll  Quant = "all"  // no child violates it
+	QuantNone Quant = "none" // no child satisfies it
+)
+
+// FilterStep is one hop of a condition path: the edge key as declared on the
+// node, and the quantifier — empty on a to-one hop, required on a to-many hop.
+type FilterStep struct {
+	Key   string
+	Quant Quant
+}
+
+// FilterCond is one leaf condition in WIRE terms: the hops from the root
 // (outermost first; nil for a root column), the wire json key of the column,
 // the operator and the value as the parser produced it.
 type FilterCond struct {
-	Path  []string
+	Path  []FilterStep
 	Field string
 	Op    FilterOp
 	Value any
@@ -88,16 +108,25 @@ type ResolvedCond struct {
 	Column Column
 	Op     FilterOp
 	Value  any
+	// Node is the node Column belongs to: the root when Hops is empty, else
+	// Hops[len-1].To. It is redundant with Hops and carried anyway so a LEAF
+	// is interpretable on its own — cached, serialized, or unit-tested as a
+	// bare ResolvedFilter — without the caller having to carry the root in
+	// from outside just to name the table the column sits on.
+	Node Resource
 }
 
-// FilterHop is one traversed edge: its key as declared, the edge itself, and
-// the nodes on either side. Edge is a COPY of the traversed edge as Edges()
-// returned it — there is no shared identity to compare against.
+// FilterHop is one traversed edge: its key as declared, the edge itself, the
+// quantifier ("" on a to-one hop; any / all / none on a to-many hop, where
+// the adapter emits EXISTS / NOT EXISTS), and the nodes on either side. Edge
+// is a COPY of the traversed edge as Edges() returned it — there is no shared
+// identity to compare against.
 type FilterHop struct {
-	Key  string
-	Edge Edge
-	From Resource
-	To   Resource
+	Key   string
+	Edge  Edge
+	Quant Quant
+	From  Resource
+	To    Resource
 }
 
 func (ResolvedAnd) resolvedFilterNode()  {}
@@ -116,40 +145,55 @@ func ResolveFilter(root Resource, f Filter, opts Options) (ResolvedFilter, error
 	if f == nil {
 		return nil, nil
 	}
+	// No root means no graph to check against: refuse rather than panic on the
+	// first Edges() call.
+	if root == nil {
+		return nil, NewError(INVALID_FILTER, "")
+	}
 	r := &filterResolver{
 		root:     root,
 		maxDepth: opts.Limits.MaxFilterDepth,
+		maxMany:  opts.Limits.MaxFilterMany,
 		maxNodes: opts.Limits.MaxFilterNodes,
 	}
 	if r.maxDepth == 0 {
 		r.maxDepth = DefaultLimits.MaxFilterDepth
 	}
+	if r.maxMany == 0 {
+		r.maxMany = DefaultLimits.MaxFilterMany
+	}
 	if r.maxNodes == 0 {
 		r.maxNodes = DefaultLimits.MaxFilterNodes
 	}
-	return r.resolve(f)
+	return r.resolve(f, "")
 }
 
 type filterResolver struct {
-	root               Resource
-	maxDepth, maxNodes int
-	nodes              int // conditions + groups seen so far
+	root                        Resource
+	maxDepth, maxMany, maxNodes int
+	nodes                       int // conditions + groups seen so far
 }
 
-func (r *filterResolver) resolve(f Filter) (ResolvedFilter, error) {
+// resolve walks one AST node. at is the node's POSITION in the tree — "" at
+// the root, "or[0].and[1]" for a member of a nested group — and is the error
+// path for every STRUCTURAL fault, which has no field path of its own: an
+// empty group, a nil member, a nil pointer node, an unrecognized type. A leaf
+// fault keeps its dotted field path instead; that is what the client edits.
+func (r *filterResolver) resolve(f Filter, at string) (ResolvedFilter, error) {
 	r.nodes++
 	if r.nodes > r.maxNodes {
+		// A size fault is about the tree, not a position in it.
 		return nil, NewError(FILTER_TOO_DEEP, "")
 	}
 	switch n := f.(type) {
 	case FilterAnd:
-		out, err := r.group(n)
+		out, err := r.group(n, at, "and")
 		if err != nil {
 			return nil, err
 		}
 		return ResolvedAnd(out), nil
 	case FilterOr:
-		out, err := r.group(n)
+		out, err := r.group(n, at, "or")
 		if err != nil {
 			return nil, err
 		}
@@ -158,44 +202,52 @@ func (r *filterResolver) resolve(f Filter) (ResolvedFilter, error) {
 		return r.cond(n)
 	case *FilterCond:
 		if n == nil {
-			return nil, NewError(INVALID_FILTER, "")
+			return nil, NewError(INVALID_FILTER, at)
 		}
 		return r.cond(*n)
 	case *FilterAnd:
 		if n == nil {
-			return nil, NewError(INVALID_FILTER, "")
+			return nil, NewError(INVALID_FILTER, at)
 		}
-		out, err := r.group(*n)
+		out, err := r.group(*n, at, "and")
 		if err != nil {
 			return nil, err
 		}
 		return ResolvedAnd(out), nil
 	case *FilterOr:
 		if n == nil {
-			return nil, NewError(INVALID_FILTER, "")
+			return nil, NewError(INVALID_FILTER, at)
 		}
-		out, err := r.group(*n)
+		out, err := r.group(*n, at, "or")
 		if err != nil {
 			return nil, err
 		}
 		return ResolvedOr(out), nil
 	}
-	return nil, NewError(INVALID_FILTER, "")
+	return nil, NewError(INVALID_FILTER, at)
 }
 
 // group resolves the members of an And/Or. An empty group is rejected: its
 // truth value (vacuous true for and, false for or) differs between SQL
-// dialects and adapters, so the parser must not produce one.
-func (r *filterResolver) group(members []Filter) ([]ResolvedFilter, error) {
+// dialects and adapters, so the parser must not produce one. at is the group's
+// own position, label its wire spelling; member i sits at "<at>.<label>[i]",
+// which is what a client needs to find the offending element in a body where
+// the members carry no names — a bare index into an unnamed array is
+// unusable, so the group kind is spelled out with it.
+func (r *filterResolver) group(members []Filter, at, label string) ([]ResolvedFilter, error) {
 	if len(members) == 0 {
-		return nil, NewError(INVALID_FILTER, "")
+		return nil, NewError(INVALID_FILTER, at)
 	}
 	out := make([]ResolvedFilter, 0, len(members))
-	for _, m := range members {
-		if m == nil {
-			return nil, NewError(INVALID_FILTER, "")
+	for i, m := range members {
+		pos := label + "[" + strconv.Itoa(i) + "]"
+		if at != "" {
+			pos = at + "." + pos
 		}
-		rm, err := r.resolve(m)
+		if m == nil {
+			return nil, NewError(INVALID_FILTER, pos)
+		}
+		rm, err := r.resolve(m, pos)
 		if err != nil {
 			return nil, err
 		}
@@ -205,50 +257,146 @@ func (r *filterResolver) group(members []Filter) ([]ResolvedFilter, error) {
 }
 
 func (r *filterResolver) cond(c FilterCond) (ResolvedFilter, error) {
+	keys := stepKeys(c.Path)
 	if len(c.Path) > r.maxDepth {
-		return nil, NewError(FILTER_TOO_DEEP, truncPath(c.Path, r.maxDepth+1))
+		return nil, NewError(FILTER_TOO_DEEP, truncPath(keys, r.maxDepth+1))
 	}
 	cur := r.root
 	hops := make([]FilterHop, 0, len(c.Path))
-	for i, key := range c.Path {
-		e, ok := cur.Edges()[key]
-		// Many is re-checked here, not assumed: graph.Compile already refuses
-		// Filterable() on a to-many edge, but include is hand-implementable,
-		// and a to-many hop without a quantifier would make the adapter emit a
-		// row-multiplying join.
-		if !ok || !e.Filterable || e.Many || e.Target == nil {
-			return nil, NewError(INVALID_FILTER, strings.Join(c.Path[:i+1], "."))
+	many := 0
+	for i, step := range c.Path {
+		e, ok := cur.Edges()[step.Key]
+		if !ok {
+			// The keys BEFORE i were found in the graph and are bounded by it,
+			// so they go back whole; this one is raw client text.
+			bad := clientEcho(step.Key)
+			if i > 0 {
+				bad = strings.Join(keys[:i], ".") + "." + bad
+			}
+			return nil, NewError(INVALID_FILTER, bad)
+		}
+		if !e.Filterable || e.Target == nil {
+			return nil, NewError(INVALID_FILTER, strings.Join(keys[:i+1], "."))
+		}
+		// The quantifier belongs to a to-many hop and to nothing else: on a
+		// to-one hop there is one row and nothing to quantify over; on a
+		// to-many hop without one the adapter could not choose between
+		// EXISTS and NOT EXISTS. An unknown quantifier is refused here too —
+		// Quant is a closed set the adapter switches over — and it is refused
+		// FIRST, before the hop's arity is consulted: `author:bogus` and
+		// `reviews:bogus` are the same client mistake (a word that is not a
+		// quantifier), and reporting one of them as "quantifier on a to-one
+		// hop" would send the client to fix the wrong half of the spelling.
+		switch {
+		case step.Quant != "" && !quantKnown(step.Quant):
+			return nil, NewError(INVALID_FILTER, strings.Join(keys[:i+1], ".")+":"+clientEcho(string(step.Quant)))
+		case !e.Many && step.Quant != "":
+			return nil, NewError(INVALID_FILTER, strings.Join(keys[:i+1], ".")+":"+clientEcho(string(step.Quant)))
+		case e.Many && step.Quant == "":
+			return nil, NewError(INVALID_FILTER, strings.Join(keys[:i+1], "."))
+		}
+		if e.Many {
+			many++
+			if many > r.maxMany {
+				return nil, NewError(FILTER_TOO_DEEP, truncPath(keys, r.maxDepth+1))
+			}
 		}
 		next := e.Target()
-		hops = append(hops, FilterHop{Key: key, Edge: e, From: cur, To: next})
+		// A hand-built graph may return a nil target; Compile never produces one.
+		if next == nil {
+			return nil, NewError(INVALID_FILTER, strings.Join(keys[:i+1], "."))
+		}
+		hops = append(hops, FilterHop{Key: step.Key, Edge: e, Quant: step.Quant, From: cur, To: next})
 		cur = next
 	}
 	col, ok := ColumnsOf(cur)[c.Field]
-	if !ok || !col.Filterable {
-		return nil, NewError(INVALID_FILTER, condPath(c))
+	if !ok {
+		// Unknown: client text, bounded. A column that EXISTS but is not
+		// filterable is a graph name and goes back whole.
+		return nil, NewError(INVALID_FILTER, condPath(keys, clientEcho(c.Field)))
+	}
+	if !col.Filterable {
+		return nil, NewError(INVALID_FILTER, condPath(keys, c.Field))
 	}
 	if !opAllowed(c.Op, col.Type) {
-		return nil, NewError(INVALID_FILTER, condPath(c)+":"+string(c.Op))
+		return nil, NewError(INVALID_FILTER, condPath(keys, c.Field)+":"+clientEcho(string(c.Op)))
 	}
-	return ResolvedCond{Hops: hops, Column: col, Op: c.Op, Value: c.Value}, nil
+	return ResolvedCond{Hops: hops, Column: col, Op: c.Op, Value: c.Value, Node: cur}, nil
+}
+
+func quantKnown(q Quant) bool {
+	return q == QuantAny || q == QuantAll || q == QuantNone
+}
+
+// clientEchoMax bounds any client string echoed in an INVALID_FILTER path.
+const clientEchoMax = 16
+
+// clientEcho renders client text for an error path, at most clientEchoMax
+// bytes followed by "…". It applies to every string that reaches an error path
+// BECAUSE it was not found in the graph — an unknown edge key, an unknown
+// field, an unknown operator, an unknown quantifier: those are raw client text
+// of unbounded length, and echoing them whole would let a client choose the
+// size of the 400 body — the same reason truncPath exists. Names that WERE
+// found are bounded by the graph and are echoed whole. The cut lands on a rune
+// boundary; the known spellings are far below the bound and pass through
+// unchanged.
+func clientEcho(s string) string {
+	if len(s) <= clientEchoMax {
+		return s
+	}
+	end := 0
+	for i := range s { // i is the byte offset of each rune
+		if i > clientEchoMax {
+			break
+		}
+		end = i
+	}
+	return s[:end] + "…"
+}
+
+// stepKeys projects a path onto its edge keys. Quantifiers never appear in an
+// error path except where they ARE the fault ("author:any").
+func stepKeys(path []FilterStep) []string {
+	keys := make([]string, len(path))
+	for i, s := range path {
+		keys[i] = s.Key
+	}
+	return keys
 }
 
 // condPath renders a condition's wire path for an error: "a.b.field".
-func condPath(c FilterCond) string {
-	parts := make([]string, 0, len(c.Path)+1)
-	parts = append(parts, c.Path...)
-	return strings.Join(append(parts, c.Field), ".")
+func condPath(keys []string, field string) string {
+	parts := make([]string, 0, len(keys)+1)
+	parts = append(parts, keys...)
+	return strings.Join(append(parts, field), ".")
 }
 
-// truncPath renders at most n leading segments of a REJECTED path, marked with
-// an ellipsis. A too-deep condition is refused before any hop is checked, so
-// its path is unvalidated client text of unbounded length; echoing all of it
-// back would let a client choose the size of the error body.
-func truncPath(path []string, n int) string {
-	if n > len(path) {
-		n = len(path)
+// truncPath renders at most n leading keys of a REJECTED path, each key
+// bounded by clientEcho, and appends a trailing "…" ONLY when keys were
+// actually dropped. A too-deep condition is refused BEFORE any hop is
+// validated, so every key in it is raw client text: bounding the segment COUNT
+// alone still lets one 4 KB key choose the size of the error body, so each key
+// is bounded individually too. The MaxFilterMany site has the same property
+// for the keys after the current hop — those were never looked up — and
+// bounding the earlier, graph-known ones as well costs nothing: real column and
+// edge names sit far below the bound and pass through unchanged. That site
+// also never truncates: its path is within MaxFilterDepth by construction, so
+// it carries every key and no trailing ellipsis — the mark means "there was
+// more", and claiming it where nothing was cut misreads the fault.
+func truncPath(keys []string, n int) string {
+	dropped := len(keys) > n
+	if n > len(keys) {
+		n = len(keys)
 	}
-	return strings.Join(path[:n], ".") + "…"
+	parts := make([]string, n)
+	for i, k := range keys[:n] {
+		parts[i] = clientEcho(k)
+	}
+	out := strings.Join(parts, ".")
+	if dropped {
+		out += "…"
+	}
+	return out
 }
 
 // orderedKinds are the column kinds the ordering operators apply to; time.Time
@@ -262,12 +410,33 @@ var orderedKinds = map[reflect.Kind]bool{
 
 var filterTimeType = reflect.TypeFor[time.Time]()
 
-// opAllowed is the operator ↔ column-type matrix. A typeless column admits
-// NOTHING, not even equality: graph.Compile always fills Column.Type, so a nil
-// there means a hand-built ColumnSource the engine cannot judge — and an
-// adapter that binds a value it cannot type is the wrong failure mode.
-func opAllowed(op FilterOp, t reflect.Type) bool {
+// FilterableType reports whether t is a column type the filter engine can
+// judge at all: bool, any signed or unsigned integer, any float, string, or
+// time.Time. It is ONE predicate for two callers that have to agree —
+// graph.Compile admits exactly this set for the `filter` tag option, and
+// opAllowed reasons over it — because a type the compiler let through and the
+// resolver then refused would be a filterable column no condition can ever
+// name, a grant that silently grants nothing.
+//
+// A nil type is false. graph.Compile always fills Column.Type, so a nil there
+// means a hand-built ColumnSource the engine cannot judge, and an adapter that
+// binds a value it cannot type is the wrong failure mode.
+func FilterableType(t reflect.Type) bool {
 	if t == nil {
+		return false
+	}
+	if t == filterTimeType {
+		return true
+	}
+	return t.Kind() == reflect.Bool || orderedKinds[t.Kind()]
+}
+
+// opAllowed is the operator ↔ column-type matrix. A column whose type is
+// outside FilterableType admits NOTHING, not even equality — Compile refuses
+// to mark such a field filterable in the first place, and a hand-built source
+// that marks one anyway is refused here rather than handed to an adapter.
+func opAllowed(op FilterOp, t reflect.Type) bool {
+	if !FilterableType(t) {
 		return false
 	}
 	switch op {

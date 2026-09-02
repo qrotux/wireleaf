@@ -1734,6 +1734,64 @@ func TestCompileNoColTagsYieldsNilColumns(t *testing.T) {
 	}
 }
 
+// Columns() hands out the node's LIVE map, not a copy per call: it is on the
+// hot path of every filter and sort resolution, and copying it there would
+// allocate once per request for a map that Compile froze. Two calls must be
+// the same map.
+func TestCompileColumnsIsTheLiveMap(t *testing.T) {
+	b := NewBuilder()
+	okCol(b)
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	n := g.Resource("Col").(include.ColumnSource)
+	a, c := n.Columns(), n.Columns()
+	if reflect.ValueOf(a).Pointer() != reflect.ValueOf(c).Pointer() {
+		t.Error("Columns() returned a different map on the second call, want the live one")
+	}
+}
+
+// A bare `col:"name"` is a PROJECTION binding and grants no permission: the
+// column is known to the engine, and neither sortable nor filterable until
+// the option says so.
+func TestCompileBareColTagGrantsNothing(t *testing.T) {
+	b := NewBuilder()
+	Node[colRow, colBareWire](b, "Bare").
+		Wire(func(r colRow, c *include.Ctx) colBareWire { return colBareWire{ID: r.ID} }).
+		PrimaryKey(func(r colRow) string { return r.ID })
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	col, ok := include.ColumnsOf(g.Resource("Bare"))["id"]
+	if !ok {
+		t.Fatal("id: no column bound by a bare col tag")
+	}
+	if col.Col != "id" || col.Sortable || col.Filterable {
+		t.Errorf("column = %+v, want Col \"id\" with neither grant", col)
+	}
+}
+
+// Depth dominance decides which col tag binds a shadowed json key: the OUTER
+// field wins the wire key, so its tag — SQL name and grants together — is the
+// one that reaches Columns(). The embedded tag never applies to a key the
+// embedded field does not own.
+func TestCompileColTagFollowsDepthDominance(t *testing.T) {
+	b := NewBuilder()
+	Node[colRow, colShadowWire](b, "Shadow").
+		Wire(func(r colRow, c *include.Ctx) colShadowWire { return colShadowWire{ID: r.ID} }).
+		PrimaryKey(func(r colRow) string { return r.ID })
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	col := include.ColumnsOf(g.Resource("Shadow"))["id"]
+	if col.Col != "outer_id" || !col.Filterable {
+		t.Errorf("column = %+v, want the OUTER tag (outer_id, filter)", col)
+	}
+}
+
 type colBothWire struct {
 	ID string `json:"id" col:"id" sortCol:"id"`
 }
@@ -1763,6 +1821,24 @@ type colFilterSliceWire struct {
 	Tags []string `json:"tags" col:"tags,filter"`
 }
 
+// colBareWire: a col tag with no options at all. It binds a projection and
+// nothing else — neither sortable nor filterable — so the two grants stay
+// opt-in.
+type colBareWire struct {
+	ID string `json:"id" col:"id"`
+}
+
+// ColShadowed is embedded and shadowed: the outer field wins depth dominance
+// on the json key "id", so the OUTER col tag is the binding.
+type ColShadowed struct {
+	ID string `json:"id" col:"inner_id"`
+}
+
+type colShadowWire struct {
+	ColShadowed
+	ID string `json:"id" col:"outer_id,filter"`
+}
+
 type colReservedWire struct {
 	ID string `json:"id"`
 	Or string `json:"or" col:"or_col,filter"`
@@ -1771,6 +1847,27 @@ type colReservedWire struct {
 type colUnexportedWire struct {
 	ID     string `json:"id"`
 	hidden string `col:"hidden"` //nolint:unused // fixture
+}
+
+// A comma in a sortCol VALUE is a finding, never an option list: the legacy
+// tag means one SQL name and grants `sort` and nothing else.
+type colLegacyFilterOptWire struct {
+	ID string `json:"id" sortCol:"a,filter"`
+}
+
+type colLegacySortOptWire struct {
+	ID string `json:"id" sortCol:"a,sort"`
+}
+
+// ColEmbedded is embedded, so its own col tag binds nothing: encoding/json
+// promotes its FIELDS, and the embedding field never appears on the wire.
+type ColEmbedded struct {
+	Name string `json:"name" col:"name"`
+}
+
+type colEmbedTagWire struct {
+	ID          string `json:"id"`
+	ColEmbedded `col:"x"`
 }
 
 func TestCompileColTagFindings(t *testing.T) {
@@ -1860,6 +1957,33 @@ func TestCompileColTagFindings(t *testing.T) {
 			},
 			want: "col tag on unexported field hidden",
 		},
+		{
+			name: "legacy sortCol carrying a filter option",
+			build: func(b *Builder) {
+				Node[colRow, colLegacyFilterOptWire](b, "X").
+					Wire(func(r colRow, c *include.Ctx) colLegacyFilterOptWire { return colLegacyFilterOptWire{} }).
+					PrimaryKey(func(r colRow) string { return r.ID })
+			},
+			want: `sortCol tag on field ID must not contain options (use col:"name,sort,…")`,
+		},
+		{
+			name: "legacy sortCol carrying a sort option",
+			build: func(b *Builder) {
+				Node[colRow, colLegacySortOptWire](b, "X").
+					Wire(func(r colRow, c *include.Ctx) colLegacySortOptWire { return colLegacySortOptWire{} }).
+					PrimaryKey(func(r colRow) string { return r.ID })
+			},
+			want: `sortCol tag on field ID must not contain options (use col:"name,sort,…")`,
+		},
+		{
+			name: "col tag on an embedded field",
+			build: func(b *Builder) {
+				Node[colRow, colEmbedTagWire](b, "X").
+					Wire(func(r colRow, c *include.Ctx) colEmbedTagWire { return colEmbedTagWire{} }).
+					PrimaryKey(func(r colRow) string { return r.ID })
+			},
+			want: "col tag on embedded field ColEmbedded is inert",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1913,6 +2037,46 @@ func TestCompileFilterableEdgeThroughFilterableEdge(t *testing.T) {
 	}
 }
 
+// The filterable surface may lie beyond a REVERSE edge, not only a to-one one:
+// Author has no filterable column of its own, and the only column a condition
+// can ever name sits on Col, one reverse hop further.
+func TestCompileFilterableSurfaceBeyondReverseEdge(t *testing.T) {
+	b := NewBuilder()
+	book := okBook(b)
+	author := okAuthor(b) // AuWire carries no col tags: no filterable column
+	okCol(b)
+	book.Edge("author", ToOne[AuWire]()).
+		ForeignKey(func(r bkRow) string { return r.AuthorID }).
+		Filterable()
+	author.Edge("cols", Reverse[colWire]("authorId")).Filterable()
+	if _, err := b.Compile(); err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+}
+
+// Reverse and forward to-many edges are filterable too: a condition crosses
+// them with a quantifier (include.FilterStep.Quant), which ResolveFilter
+// demands; Compile only grants the permission.
+func TestCompileFilterableManyEdges(t *testing.T) {
+	b := NewBuilder()
+	book := okBook(b)
+	okCol(b)
+	book.Edge("cols", Reverse[colWire]("bookId")).Filterable()
+	book.Edge("tags", ToMany[colWire]()).
+		ForeignKeys(func(r bkRow) []string { return r.TagIDs }).
+		Filterable()
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	edges := g.Resource("Book").Edges()
+	for _, key := range []string{"cols", "tags"} {
+		if !edges[key].Filterable {
+			t.Errorf("%s: Filterable = false, want true", key)
+		}
+	}
+}
+
 func TestCompileFilterableFindings(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -1920,13 +2084,15 @@ func TestCompileFilterableFindings(t *testing.T) {
 		want  string
 	}{
 		{
-			name: "Filterable on a reverse edge",
+			name: "Filterable on an in-array edge",
 			build: func(b *Builder) {
 				book := okBook(b)
 				okCol(b)
-				book.Edge("cols", Reverse[colWire]("bookId")).Filterable()
+				book.Edge("participants", InArray[colWire]("people", "user")).
+					ForeignKeys(func(r bkRow) []string { return r.TagIDs }).
+					Filterable()
 			},
-			want: "Filterable() is only valid on to-one edges (this is reverse)",
+			want: "Filterable() is not valid on in-array edges (to-one, reverse and to-many only)",
 		},
 		{
 			name: "Filterable on a computed edge",
@@ -1934,7 +2100,7 @@ func TestCompileFilterableFindings(t *testing.T) {
 				book := okBook(b)
 				book.Edge("stats", Computed(apidoc.RawFragment(map[string]any{"type": "object"}))).Filterable()
 			},
-			want: "Filterable() is only valid on to-one edges (this is computed)",
+			want: "Filterable() is not valid on computed edges (to-one, reverse and to-many only)",
 		},
 		{
 			name: "Filterable with Guard",

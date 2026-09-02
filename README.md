@@ -375,8 +375,9 @@ HTML escaping.
 **`Options.SortPolicy`** — an unknown client `:sort()` key on an edge whose
 target wire struct declares sortable columns (`Compile` derives the whitelist
 from the `sort` option of `col` struct tags, or the legacy `sortCol` tag (an
-empty `sortCol:""` is now a compile finding, and a comma inside its value reads
-as a tag option — see [`docs/graph.md`](docs/graph.md)) — tag presence *is*
+empty `sortCol:""` is now a compile finding, and a comma inside its value is a
+finding too — the legacy tag grants `sort` and nothing else; see
+[`docs/graph.md`](docs/graph.md)) — tag presence *is*
 membership, deny-by-default):
 `SortStrict` (default) fails the plan with `INVALID_INCLUDE`; `SortFallback`
 falls back to the edge's own `graph.Sort(key)` default. The client string never
@@ -431,8 +432,10 @@ rows a `Bare()` fetcher really returns beyond its `EstimatedRows`.
 ## Filters (groundwork)
 
 The core carries a filter **model**, not a filter syntax. A wire field with
-`col:"…,filter"` is a filterable column, a to-one edge with `.Filterable()` may
-be traversed (deny-by-default, independent of `Includable()`, never with
+`col:"…,filter"` is a filterable column, an edge with `.Filterable()` may be
+traversed — to-one as a join, reverse / to-many with a quantifier per hop
+(`any`, `all`, `none`) that the adapter renders as `EXISTS` / `NOT EXISTS`
+(deny-by-default, independent of `Includable()`, never with
 `Guard()`), and `include.ResolveFilter` checks a parser-produced
 `include.Filter` tree against the compiled graph, returning SQL-side names
 only. Parsing a JSON `where` body or a `?where[field][op]=` query string and
@@ -452,8 +455,8 @@ the HTTP layer maps onto its own error type. `Status` defaults to 400.
 | `INCLUDE_TOO_EXPENSIVE` | 400 | The plan's static row estimate exceeds `Limits.MaxCost`. Lower `:limit()` values or drop a nested collection. |
 | `INCLUDE_BUDGET_EXCEEDED` | 400 | Rows materialized (or `Cost × page size` in `HydrateByQuery`) exceed `Limits.MaxRows`. |
 | `NOT_FOUND` | 404 | `HydrateByID`'s fetch closure returned a nil doc. |
-| `INVALID_FILTER` | 400 | `ResolveFilter`: unknown/non-filterable edge or column, root without columns, empty group, unknown operator or operator illegal for the column type (`Path` is `"a.b.field"`, the path up to the bad edge, or `"a.b.field:op"`). |
-| `FILTER_TOO_DEEP` | 400 | `Limits.MaxFilterDepth` **or** `Limits.MaxFilterNodes` exceeded. |
+| `INVALID_FILTER` | 400 | `ResolveFilter`: unknown/non-filterable edge or column, root without columns, empty group, a to-many hop without a quantifier, a quantifier on a to-one hop, an unknown quantifier, unknown operator or operator illegal for the column type (`Path` is `"a.b.field"`, the path up to the bad edge, `"a.b.field:op"`, or `"a.b:quant"`). |
+| `FILTER_TOO_DEEP` | 400 | `Limits.MaxFilterDepth`, `Limits.MaxFilterMany` **or** `Limits.MaxFilterNodes` exceeded. |
 
 ## Boundaries
 

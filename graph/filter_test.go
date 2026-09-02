@@ -31,6 +31,17 @@ type FaWire struct {
 	Age  int    `json:"age" col:"age,filter"`
 }
 
+type frRow struct {
+	ID     string
+	BookID string
+	Rating int
+}
+
+type FrWire struct {
+	ID     string `json:"id" col:"id,filter"`
+	Rating int    `json:"rating" col:"rating,filter"`
+}
+
 func filterTestGraph(t *testing.T) *Graph {
 	t.Helper()
 	b := NewBuilder()
@@ -40,6 +51,13 @@ func filterTestGraph(t *testing.T) *Graph {
 	author := Node[faRow, FaWire](b, "FAuthor").
 		Wire(func(r faRow, _ *include.Ctx) FaWire { return FaWire{ID: r.ID, Name: r.Name, Age: r.Age} }).
 		PrimaryKey(func(r faRow) string { return r.ID })
+	review := Node[frRow, FrWire](b, "FReview").
+		Wire(func(r frRow, _ *include.Ctx) FrWire { return FrWire{ID: r.ID, Rating: r.Rating} }).
+		PrimaryKey(func(r frRow) string { return r.ID })
+	_ = review
+	// filterable but not includable: a filter never loads the reviews, so no
+	// FetchParents bind is required
+	book.Edge("reviews", Reverse[FrWire]("bookId")).Filterable()
 	book.Edge("author", ToOne[FaWire]()).
 		ForeignKey(func(r fbRow) string { return r.AuthorID }).
 		Filterable().
@@ -58,7 +76,7 @@ func TestFilterResolvesOverCompiledGraph(t *testing.T) {
 	root := g.Resource("FBook")
 	f := include.FilterAnd{
 		include.FilterCond{Field: "title", Op: include.OpEq, Value: "Dune"},
-		include.FilterCond{Path: []string{"author"}, Field: "age", Op: include.OpGte, Value: 18},
+		include.FilterCond{Path: []include.FilterStep{{Key: "author"}}, Field: "age", Op: include.OpGte, Value: 18},
 	}
 	got, err := include.ResolveFilter(root, f, include.DefaultOptions)
 	if err != nil {
@@ -109,5 +127,38 @@ func TestFilterReachesRootFetcher(t *testing.T) {
 	}
 	if len(res.Data) != 1 {
 		t.Errorf("Data = %d docs, want 1", len(res.Data))
+	}
+}
+
+// A quantified hop over a compiled reverse edge: the quantifier the client
+// put on the step reaches the adapter on the hop.
+func TestFilterQuantifierOverCompiledGraph(t *testing.T) {
+	g := filterTestGraph(t)
+	root := g.Resource("FBook")
+	f := include.FilterCond{
+		Path:  []include.FilterStep{{Key: "reviews", Quant: include.QuantAny}},
+		Field: "rating", Op: include.OpGt, Value: 4,
+	}
+	got, err := include.ResolveFilter(root, f, include.DefaultOptions)
+	if err != nil {
+		t.Fatalf("ResolveFilter: %v", err)
+	}
+	c := got.(include.ResolvedCond)
+	if len(c.Hops) != 1 {
+		t.Fatalf("hops = %d, want 1", len(c.Hops))
+	}
+	if h := c.Hops[0]; h.Key != "reviews" || h.Quant != include.QuantAny || h.To.Name() != "FReview" || !h.Edge.Many {
+		t.Errorf("hop = %+v", h)
+	}
+	if c.Column.Col != "rating" {
+		t.Errorf("column = %+v", c.Column)
+	}
+
+	_, err = include.ResolveFilter(root, include.FilterCond{
+		Path: []include.FilterStep{{Key: "reviews"}}, Field: "rating", Op: include.OpGt, Value: 4,
+	}, include.DefaultOptions)
+	var e *include.Error
+	if !errors.As(err, &e) || e.Code != include.INVALID_FILTER || e.Path != "reviews" {
+		t.Errorf("no quantifier: err = %v, want INVALID_FILTER at \"reviews\"", err)
 	}
 }

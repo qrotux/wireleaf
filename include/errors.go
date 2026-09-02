@@ -33,18 +33,38 @@ const (
 
 	// INVALID_FILTER is returned by ResolveFilter for a condition the graph
 	// does not admit: an unknown or non-filterable edge or column on the
-	// path, a root with no columns, an empty or nil-holding group, an unknown
-	// operator, or an operator the column's type does not support. Path is
-	// the dotted field path ("author.name"), the path up to the offending
-	// edge, or "<path>:<op>" for an operator fault.
+	// path, a to-many hop without a quantifier, a root with no columns, an
+	// empty or nil-holding group, an unknown operator, or an operator the
+	// column's type does not support.
+	//
+	// For a LEAF fault Path is the dotted field path ("author.name"), the path
+	// up to the offending hop ("reviews"), "<path>:<quant>" for a quantifier
+	// fault (an unknown word, or one on a to-one hop — the unknown word is
+	// reported as such either way), or "<path>:<op>" for an operator fault.
+	// Text that was not found in the graph (an unknown key, field, operator or
+	// quantifier) is echoed bounded to 16 bytes plus "…"; a name the graph does
+	// know goes back whole.
+	//
+	// A STRUCTURAL fault — an empty group, a nil member, a nil pointer node —
+	// has no field path, so Path is the node's POSITION in the tree instead:
+	// "and[1]", "or[0].and[2]", indexed and labelled with the group kind
+	// because the members of a group carry no names. The root has no position:
+	// an empty root-level group, and a nil root node, still report "".
 	INVALID_FILTER Code = "INVALID_FILTER"
 
 	// FILTER_TOO_DEEP covers both filter size limits, as INCLUDE_TOO_DEEP does
-	// for includes: a condition path longer than Limits.MaxFilterDepth and a
-	// tree with more than Limits.MaxFilterNodes conditions and groups (Path is
-	// empty). A too-deep path is refused before any hop is checked, so Path
-	// echoes only its first MaxFilterDepth+1 segments followed by "…" — the
-	// client must not get to choose the size of the error body.
+	// for includes: a condition path longer than Limits.MaxFilterDepth, a path
+	// crossing more than Limits.MaxFilterMany to-many hops, and a tree with
+	// more than Limits.MaxFilterNodes conditions and groups (Path is empty).
+	// A too-deep path is refused before any hop is checked, so both its
+	// segment COUNT and each segment's LENGTH are bounded: Path echoes only
+	// the first MaxFilterDepth+1 segments, each one cut to 16 bytes plus "…"
+	// like any other unvalidated client text. The client must not get to
+	// choose the size of the error body, by either dimension. A trailing "…"
+	// appears only when segments were actually DROPPED — the mark means
+	// "there was more" — so a too-MANY-hops path, already within
+	// MaxFilterDepth by the time it is counted, always comes back whole and
+	// unmarked.
 	FILTER_TOO_DEEP Code = "FILTER_TOO_DEEP"
 
 	// NOT_FOUND is returned when the requested root entity does not exist.

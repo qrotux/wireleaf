@@ -96,7 +96,9 @@ flattened, depth-dominance for shadowed names). From that walk it derives:
   `col:"sql_name[,sort][,filter]"` struct tag on a serialized, json-tagged
   field binds that json name to a SQL-side column; the `sort` option makes it
   a legal sort key (the `sortCol` whitelist below), the `filter` option a
-  legal filter column. The legacy `sortCol:"sql_name"` tag is exactly
+  legal filter column. A bare `col:"name"` is a PROJECTION binding and nothing
+  more — the engine knows the column, and grants neither sorting nor filtering
+  on it until an option says so. The legacy `sortCol:"sql_name"` tag is exactly
   `col:"sql_name,sort"`. `Type` is the field's Go type, pointers dereferenced.
   Findings: both tags on one field; an empty name; an unknown or repeated
   option; `filter` on a field that is not bool / number / string /
@@ -104,9 +106,10 @@ flattened, depth-dominance for shadowed names). From that walk it derives:
   for filter groups); a tag on an unexported or embedded field. On a
   `json:"-"` or untagged field the tag is silently dropped. Two legacy edge
   cases changed with the `col` tag: an empty `sortCol:""` is now a finding (it
-  used to read as no tag), and a `sortCol` value is parsed with the same
-  `name[,option…]` grammar, so a comma inside it is an option, not part of the
-  SQL name.
+  used to read as no tag), and a `sortCol` value never enters the option
+  grammar at all — it is one SQL name granting `sort` and nothing else, so a
+  comma anywhere inside it is a finding (`sortCol:"a,filter"` must not sneak a
+  read grant past a tag that only ever meant "sortable").
 - the **sortCol whitelist** (`Edge.SortCols` on reverse edges): the
   `Sortable` columns, json name → `Col`.
 
@@ -170,7 +173,7 @@ finding, never a silent no-op):
 | `Sort` | Reverse only | Wire-form key, `-` prefix = descending; must be in the target's sortCol whitelist. |
 | `Args` | Reverse, Computed | `Arg("limit", …)` is rejected — `:limit` is engine-owned. |
 | `Guard` | everything but Computed | Cheap, pure, no-DB check over the parent row; `false` hides the value in the kind's own shape (`null` for to-one, an empty collection for to-many), no fetch. Illegal with `Required()`. |
-| `Filterable` | ToOne only | Lets a filter condition traverse the edge (`include.ResolveFilter`). Deny-by-default and **independent of `Includable`**. Illegal with `Guard()`; illegal when no filterable column is reachable from the target through filterable edges (nothing to filter on); an edge keyed `and` / `or` cannot be filterable (reserved for filter groups). To-many edges are rejected until the filter model carries quantifiers. |
+| `Filterable` | ToOne, Reverse, ToMany | Lets a filter condition traverse the edge (`include.ResolveFilter`); a to-many hop needs a quantifier on the client's `FilterStep`. Deny-by-default and **independent of `Includable`**. Illegal on InArray and Computed; illegal with `Guard()`; illegal when no filterable column is reachable from the target through filterable edges (nothing to filter on); an edge keyed `and` / `or` cannot be filterable (reserved for filter groups). `Bare` and `Limit` govern include loading only — a filter's `EXISTS` sees every child. A forward `ToMany` edge is filterable at the graph level, but whether a SQL relation stands behind it (an array column, a junction table) only the adapter's start-up binding check can tell. |
 | `Required` | ToOne only | Never-null doc fact; implies membership in `Defaults()` (constructed by `Compile`). Its two policies are only legal here. |
 | `Inverse` | everything but Computed | Cross-checked: the named edge must exist on the target, point back, run the opposite direction, and (if it declares an Inverse itself) name this edge. |
 | `Envelope` | Builder, Node, everything but Computed | Wrapper style of the edge value (`include.Envelope{Key, Pagination}`); resolved edge > target node > graph into `include.Edge.Envelope`. Findings: `Envelope` on a computed edge; `Pagination` without `Key`; `Key == Pagination`; a name needing JSON escaping (`"`, `\`, control chars). `Inverse` does not sync it. |

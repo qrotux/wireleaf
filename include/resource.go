@@ -39,8 +39,9 @@ type Resource interface {
 
 // Column is the SQL-side binding of one serialized wire field. graph.Compile
 // derives it from the `col` struct tag on the node's wire struct —
-// `col:"sql_name[,sort][,filter]"`; the legacy `sortCol:"sql_name"` tag reads
-// as `col:"sql_name,sort"`. A client names a column by its wire json key —
+// `col:"sql_name[,sort][,filter]"`; the legacy `sortCol:"sql_name"` tag is
+// exactly `col:"sql_name,sort"` (a comma inside a `sortCol` value is a compile
+// finding, never an option list). A client names a column by its wire json key —
 // the map key on ColumnSource.Columns — and only ever as a lookup key.
 //
 // graph.Compile guarantees Col is a compile-time constant from a struct tag
@@ -152,9 +153,11 @@ type Edge struct {
 	// (ResolveFilter follows filterable edges only). Independent of
 	// Includable — a filter reveals facts about the target row without ever
 	// loading it, so it is its own permission. graph.Compile admits it on
-	// to-one edges only (a to-many filter needs a quantifier the filter model
-	// does not carry yet) and never together with Guard (a guard is a Go
-	// closure over the parent row, which no SQL-side filter can honour).
+	// to-one, reverse and to-many edges (crossing a to-many hop needs a
+	// quantifier on the client's FilterStep, which ResolveFilter demands);
+	// never on an in-array or computed edge, and never together with Guard (a
+	// guard is a Go closure over the parent row, which no SQL-side filter can
+	// honour).
 	Filterable bool
 
 	// Backref is the FK field on the child pointing back to the parent.

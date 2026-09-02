@@ -30,13 +30,22 @@ type Limits struct {
 	// traverse (`author.name` is depth 1; a root column depth 0). 0 means
 	// DefaultLimits.MaxFilterDepth.
 	MaxFilterDepth int
+	// MaxFilterMany is the most to-many hops one filter condition may cross;
+	// each one is a correlated subquery in the adapter's SQL. Counted within
+	// MaxFilterDepth, which bounds all hops. At the defaults (2 to-many hops
+	// inside a depth of 4) it fires on the THIRD to-many hop of one path —
+	// two nested EXISTS is already a query most planners handle badly. Raise
+	// it, up to MaxFilterDepth, to allow more deeply nested EXISTS; lower it
+	// to 1 to allow a single EXISTS around a chain of joins. 0 means
+	// DefaultLimits.MaxFilterMany.
+	MaxFilterMany int
 	// MaxFilterNodes caps the size of one filter tree: conditions and groups
 	// together. 0 means DefaultLimits.MaxFilterNodes.
 	MaxFilterNodes int
 }
 
 // DefaultLimits is the engine-wide default.
-var DefaultLimits = Limits{MaxDepth: 4, MaxNodes: 50, MaxCost: 5000, MaxRows: 50000, MaxFilterDepth: 2, MaxFilterNodes: 32}
+var DefaultLimits = Limits{MaxDepth: 4, MaxNodes: 50, MaxCost: 5000, MaxRows: 50000, MaxFilterDepth: 4, MaxFilterMany: 2, MaxFilterNodes: 32}
 
 // ------------------------------------------------------------------ Options
 
