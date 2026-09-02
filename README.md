@@ -168,11 +168,13 @@ together) is a compile finding, not a runtime surprise.
 | `graph.Computed(schema)` | not fetched — application code produces the value | whatever `schema` documents |
 
 ```go
-// Sortable columns come from the TARGET wire struct's `sortCol` tags — tag
-// presence is whitelist membership, so graph.Sort below has something to name:
+// Columns come from the TARGET wire struct's `col:"sql_name[,sort][,filter]"`
+// tags — `sort` makes the field a legal sort key (so graph.Sort below has
+// something to name), `filter` a legal filter column; the legacy
+// `sortCol:"x"` is `col:"x,sort"`:
 //
 //	type BookWire struct {
-//		CreatedAt time.Time `json:"createdAt" sortCol:"created_at"`
+//		CreatedAt time.Time `json:"createdAt" col:"created_at,sort,filter"`
 //	}
 
 book.Edge("author", graph.ToOne[AuthorWire]()).
@@ -372,7 +374,10 @@ HTML escaping.
 
 **`Options.SortPolicy`** — an unknown client `:sort()` key on an edge whose
 target wire struct declares sortable columns (`Compile` derives the whitelist
-from `sortCol` struct tags — tag presence *is* membership, deny-by-default):
+from the `sort` option of `col` struct tags, or the legacy `sortCol` tag (an
+empty `sortCol:""` is now a compile finding, and a comma inside its value reads
+as a tag option — see [`docs/graph.md`](docs/graph.md)) — tag presence *is*
+membership, deny-by-default):
 `SortStrict` (default) fails the plan with `INVALID_INCLUDE`; `SortFallback`
 falls back to the edge's own `graph.Sort(key)` default. The client string never
 reaches SQL: it is only ever a lookup key for the tag-declared SQL-side value.
@@ -423,6 +428,18 @@ rows a `Bare()` fetcher really returns beyond its `EstimatedRows`.
 
 `include.DefaultOptions` is `{Limits: DefaultLimits}`: strict sort, strict args.
 
+## Filters (groundwork)
+
+The core carries a filter **model**, not a filter syntax. A wire field with
+`col:"…,filter"` is a filterable column, a to-one edge with `.Filterable()` may
+be traversed (deny-by-default, independent of `Includable()`, never with
+`Guard()`), and `include.ResolveFilter` checks a parser-produced
+`include.Filter` tree against the compiled graph, returning SQL-side names
+only. Parsing a JSON `where` body or a `?where[field][op]=` query string and
+generating the SQL (joins, `EXISTS`) are the application adapter's job; the
+resolved filter reaches its root fetcher through `include.QueryArgs.Where`.
+See [`docs/include.md` → Filters](docs/include.md#filters).
+
 ## Errors
 
 Planning failures are `*include.Error{Code, Path, Status}` — a structured value
@@ -435,6 +452,8 @@ the HTTP layer maps onto its own error type. `Status` defaults to 400.
 | `INCLUDE_TOO_EXPENSIVE` | 400 | The plan's static row estimate exceeds `Limits.MaxCost`. Lower `:limit()` values or drop a nested collection. |
 | `INCLUDE_BUDGET_EXCEEDED` | 400 | Rows materialized (or `Cost × page size` in `HydrateByQuery`) exceed `Limits.MaxRows`. |
 | `NOT_FOUND` | 404 | `HydrateByID`'s fetch closure returned a nil doc. |
+| `INVALID_FILTER` | 400 | `ResolveFilter`: unknown/non-filterable edge or column, root without columns, empty group, unknown operator or operator illegal for the column type (`Path` is `"a.b.field"`, the path up to the bad edge, or `"a.b.field:op"`). |
+| `FILTER_TOO_DEEP` | 400 | `Limits.MaxFilterDepth` **or** `Limits.MaxFilterNodes` exceeded. |
 
 ## Boundaries
 

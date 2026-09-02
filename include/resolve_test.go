@@ -426,8 +426,9 @@ func TestResolveDefaultsThenSortedClient(t *testing.T) {
 // DefaultLimits exposes the engine-wide {4,50}; DefaultOptions is strict on
 // both policies.
 func TestDefaultOptionsValues(t *testing.T) {
-	if DefaultLimits != (Limits{MaxDepth: 4, MaxNodes: 50, MaxCost: 5000, MaxRows: 50000}) {
-		t.Errorf("DefaultLimits = %+v, want {MaxDepth:4 MaxNodes:50 MaxCost:5000 MaxRows:50000}", DefaultLimits)
+	want := Limits{MaxDepth: 4, MaxNodes: 50, MaxCost: 5000, MaxRows: 50000, MaxFilterDepth: 2, MaxFilterNodes: 32}
+	if DefaultLimits != want {
+		t.Errorf("DefaultLimits = %+v, want %+v", DefaultLimits, want)
 	}
 	if DefaultOptions.Limits != DefaultLimits {
 		t.Errorf("DefaultOptions.Limits = %+v, want %+v", DefaultOptions.Limits, DefaultLimits)

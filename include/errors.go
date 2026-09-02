@@ -31,6 +31,22 @@ const (
 	// or a smaller page.
 	INCLUDE_BUDGET_EXCEEDED Code = "INCLUDE_BUDGET_EXCEEDED"
 
+	// INVALID_FILTER is returned by ResolveFilter for a condition the graph
+	// does not admit: an unknown or non-filterable edge or column on the
+	// path, a root with no columns, an empty or nil-holding group, an unknown
+	// operator, or an operator the column's type does not support. Path is
+	// the dotted field path ("author.name"), the path up to the offending
+	// edge, or "<path>:<op>" for an operator fault.
+	INVALID_FILTER Code = "INVALID_FILTER"
+
+	// FILTER_TOO_DEEP covers both filter size limits, as INCLUDE_TOO_DEEP does
+	// for includes: a condition path longer than Limits.MaxFilterDepth and a
+	// tree with more than Limits.MaxFilterNodes conditions and groups (Path is
+	// empty). A too-deep path is refused before any hop is checked, so Path
+	// echoes only its first MaxFilterDepth+1 segments followed by "…" — the
+	// client must not get to choose the size of the error body.
+	FILTER_TOO_DEEP Code = "FILTER_TOO_DEEP"
+
 	// NOT_FOUND is returned when the requested root entity does not exist.
 	NOT_FOUND Code = "NOT_FOUND"
 )

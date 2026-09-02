@@ -4,8 +4,9 @@
 //   - An edge declares its DEFAULT sort in WIRE form (Edge.Sort, e.g.
 //     "startDate" / "-createdAt") plus a WHITELIST of sortable wire keys
 //     (Edge.SortCols: wire json key → SQL-side sort key). graph.Compile derives
-//     that whitelist from the `sortCol` struct tags on the node's wire struct —
-//     tag presence IS whitelist membership (deny-by-default).
+//     that whitelist from the `sort` option of the `col` struct tags (legacy
+//     `sortCol`) on the node's wire struct — tag presence IS whitelist
+//     membership (deny-by-default).
 //   - A client `:sort(...)` arg overrides the default. Resolution here is
 //     tolerant: an unknown or malformed client key falls back to the edge's
 //     default. Under SortStrict such a key never reaches this step — the plan

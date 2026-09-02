@@ -63,7 +63,12 @@ func ColumnsOf(res Resource) map[string]Column           // nil when res is no C
 ```
 
 `graph.Compile`'s nodes implement it (live map — do not mutate); a hand-built
-`Resource` that does not simply has no columns.
+`Resource` that does not simply has no columns. The `Col` guarantee — a
+compile-time constant from a struct tag, never client input, which is why an
+adapter may treat it as SQL identifier text — is `graph.Compile`'s; a
+hand-built `ColumnSource` owns it itself. And presence in the map is a
+projection binding, not a permission: check `Sortable` / `Filterable` before
+sorting or filtering on an entry.
 
 ### Edge
 
@@ -331,12 +336,81 @@ All three run `ResolvePlan` first (400-before-fetch), then delegate to
 - `HydrateByQuery` is the list facade. `QueryArgs{Where, Sort, Page, Limit}`
   is **passed to the `RootFetcher` verbatim — the facade does not interpret
   it**; offset-vs-cursor and the SQL are entirely the closure's business.
-  `RootFetcher` returns `(docs, total, hasMore, err)`; `QueryResult{Data,
-  Total, HasMore, Page, Limit}` copies `total`/`hasMore` through untouched and
-  echoes `q.Page`/`q.Limit` back. Root pagination and per-edge
-  `EdgeQuery.Limit` are two independent contracts.
+  `Where` is a `ResolvedFilter` from `ResolveFilter` (see Filters), nil when
+  there is no filter; an application-owned filter of its own travels in the
+  fetcher closure, not here. `RootFetcher` returns `(docs, total,
+  hasMore, err)`; `QueryResult{Data, Total, HasMore, Page, Limit}` copies
+  `total`/`hasMore` through untouched and echoes `q.Page`/`q.Limit` back. Root
+  pagination and per-edge `EdgeQuery.Limit` are two independent contracts.
 - `HydrateEntity` is for POST/PATCH: the doc is already in memory, no root
   fetch.
+
+## Filters
+
+`include` carries the filter **model**, not a filter syntax: a sealed AST a
+parser produces, and `ResolveFilter`, which checks it against the graph. The
+parser (a JSON `where` body, a `?where[field][op]=` query string) and the SQL
+generation (joins, `EXISTS`) both live in the application's adapter.
+
+```go
+type FilterOp string // OpEq, OpNe, OpLt, OpLte, OpGt, OpGte, OpIn, OpNin
+
+type Filter interface{ /* sealed */ }
+type FilterAnd []Filter
+type FilterOr  []Filter
+type FilterCond struct {
+    Path  []string // edge keys from the root, outermost first; nil = root column
+    Field string   // wire json key of the column
+    Op    FilterOp
+    Value any      // verbatim from the parser; the engine never coerces it
+}
+
+func ResolveFilter(root Resource, f Filter, opts Options) (ResolvedFilter, error)
+
+type ResolvedFilter interface{ /* sealed */ }
+type ResolvedAnd  []ResolvedFilter
+type ResolvedOr   []ResolvedFilter
+type ResolvedCond struct {
+    Hops   []FilterHop // edges traversed, root outwards
+    Column Column      // SQL-side binding on the last hop's target (or the root)
+    Op     FilterOp
+    Value  any
+}
+type FilterHop struct{ Key string; Edge Edge; From, To Resource }
+```
+
+Resolution rules:
+
+- every hop must be a `Filterable` **to-one** edge (`graph.Compile` admits
+  `Filterable()` on to-one edges only, and `ResolveFilter` re-checks it, so a
+  hand-built to-many edge marked filterable is refused too);
+- the leaf must be a `Filterable` column of the node the path reaches
+  (`ColumnSource`); a root that is no `ColumnSource` has no filterable column;
+- `eq`/`ne`/`in`/`nin` apply to every column, `lt`/`lte`/`gt`/`gte` to
+  numbers, strings and `time.Time` — never to bool;
+- an empty `And`/`Or`, or a nil member, is rejected (its truth value differs
+  between dialects);
+- `len(Path) > Limits.MaxFilterDepth` and more than `Limits.MaxFilterNodes`
+  conditions + groups are `FILTER_TOO_DEEP`; everything else the graph does
+  not admit is `INVALID_FILTER` with `Path` = `"author.name"`, the path up to
+  the offending edge, or `"author.name:like"` for an operator fault.
+
+A handler resolves before it fetches (the same 400-before-fetch rule as
+`ResolvePlan`) and hands the result to its `RootFetcher` through
+`QueryArgs.Where`. The client's spelling never reaches SQL text: an adapter
+walks `Hops` and `Column.Col`, both compile-time constants from struct tags.
+
+Reserved keys: the JSON format the adapter is expected to parse uses `and` /
+`or` as group keys, so `graph.Compile` refuses a filterable column whose json
+key is one of them.
+
+What the resolved filter does NOT carry, and the adapter therefore owns:
+the table behind each `Resource` (bind it by `Name()`), the join behind each
+hop (bind it by `(From.Name(), Key)` — `include.Edge` deliberately carries no
+foreign-key column name, only the typed closures), and the coercion of
+`Value` to `Column.Type`. `graph.Compile` validates the graph, not those
+bindings; an adapter should check at start-up that every filterable edge and
+column of every root it serves has one.
 
 ## Limits: bounding nested loading
 
@@ -388,9 +462,12 @@ opts := include.Options{Limits: include.Limits{
 | `MaxNodes` | 50 | number of CLIENT edges in the tree | `INCLUDE_TOO_DEEP` |
 | `MaxCost` | 5000 | static row estimate for ONE root document, defaults included | `INCLUDE_TOO_EXPENSIVE` |
 | `MaxRows` | 50000 | rows actually materialized by one hydrate call, root included | `INCLUDE_BUDGET_EXCEEDED` |
+| `MaxFilterDepth` | 2 | edge hops in one filter condition (`author.name` = 1) | `FILTER_TOO_DEEP` |
+| `MaxFilterNodes` | 32 | conditions + groups in one filter tree | `FILTER_TOO_DEEP` |
 
-A zero `MaxCost` / `MaxRows` means the default, so a two-field literal keeps
-working. `include.DefaultOptions` is `{Limits: DefaultLimits}`.
+A zero `MaxCost`, `MaxRows`, `MaxFilterDepth` or `MaxFilterNodes` means the
+default, so a literal that names only `MaxDepth` and `MaxNodes` keeps working.
+`include.DefaultOptions` is `{Limits: DefaultLimits}`.
 
 `MaxCost` is computed by `ResolvePlan` after `exclude` is applied: every plan
 node is estimated as the product of the multipliers on its path — root and
@@ -509,6 +586,8 @@ Planning and facade failures are `*include.Error{Code, Path, Status}`
 | `INCLUDE_TOO_DEEP` | 400 | `MaxDepth` **or** `MaxNodes` exceeded — one code for both, the message distinguishes |
 | `INCLUDE_TOO_EXPENSIVE` | 400 | the plan's static row estimate (`PlanNode.Cost`) exceeds `MaxCost`; the message carries both numbers |
 | `INCLUDE_BUDGET_EXCEEDED` | 400 | rows materialized exceed `MaxRows` — mid-hydration, or up front in `HydrateByQuery` as `Cost × QueryArgs.Limit` |
+| `INVALID_FILTER` | 400 | `ResolveFilter`: unknown/non-filterable edge or column, root without columns, empty group, unknown operator or operator illegal for the column type (`Path` is `"a.b.field"`, the path up to the bad edge, or `"a.b.field:op"`) |
+| `FILTER_TOO_DEEP` | 400 | `MaxFilterDepth` **or** `MaxFilterNodes` exceeded; for a too-deep path `Path` is the client path truncated to `MaxFilterDepth+1` segments plus `…` (a node-count fault carries an empty `Path`) |
 | `NOT_FOUND` | 404 | `HydrateByID`'s fetch returned a nil doc |
 
 Materialize-time failures — a fetcher error, a missing registration, a strict

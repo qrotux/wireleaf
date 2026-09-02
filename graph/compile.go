@@ -251,15 +251,16 @@ func (b *Builder) Compile() (*Graph, error) {
 	}
 
 	// --- pass C3: filterable edges must lead somewhere ----------------------
-	// A Filterable() edge whose target exposes neither a filterable column nor
-	// a filterable edge is inert: no condition can ever be written through it.
-	// Checked after pass C so every target's edges are known.
+	// A Filterable() edge is inert unless a filterable COLUMN is reachable
+	// from its target through filterable edges: no condition can otherwise be
+	// written through it. Checked after pass C so every target's edges are
+	// known.
 	for _, n := range b.nodes {
 		for _, eb := range edgeOrder[n] {
 			if !eb.set.filterable || eb.target == nil || compiled[eb.target] == nil {
 				continue
 			}
-			if !hasFilterSurface(compiled[eb.target], edgeOrder[eb.target]) {
+			if !hasFilterSurface(compiled[eb.target], eb.target, edgeOrder, compiled) {
 				fs.add(n.name, eb.key, "Filterable() edge to node %s, which has no filterable column and no filterable edge", eb.target.name)
 			}
 		}
@@ -447,6 +448,12 @@ func buildEdge(
 	if s.filterable && s.guardSet {
 		fs.add(name, key, "Filterable() edge cannot carry Guard(): a guard is a Go closure over the parent row, which a SQL-side filter cannot honour")
 	}
+	// The same reservation the filterable COLUMNS carry (see collectWireFields):
+	// "and" / "or" are the group keys of the JSON filter format an adapter
+	// parses, so a path segment spelled that way could never be addressed.
+	if s.filterable && (key == "and" || key == "or") {
+		fs.add(name, key, "Filterable() edge key %q: the json keys \"and\" and \"or\" are reserved for filter groups", key)
+	}
 
 	// --- declared args vs the built-ins -------------------------------------
 	// ":limit" is engine-owned: it is coerced to an int at plan time and
@@ -547,17 +554,44 @@ func reverseSortCols(k include.EdgeKindType, cols map[string]string) map[string]
 	return cols
 }
 
-// hasFilterSurface reports whether a filter condition can name anything on
-// cn: a filterable column, or a filterable edge leading further.
-func hasFilterSurface(cn *compiledNode, edges []*edgeBuild) bool {
-	for _, c := range cn.cols {
-		if c.Filterable {
-			return true
-		}
+// hasFilterSurface reports whether a filter condition can name a column
+// ANYWHERE in the filterable closure of cn — cn's own filterable columns, or
+// those of any node reachable through filterable edges. A one-hop check would
+// call a Filterable() edge useful merely because its target declares another
+// filterable edge, which is exactly the inert case when that chain leads only
+// back into itself: A -f-> A with no filterable column anywhere is a surface
+// no condition can ever reach. The visited set is what bounds the walk on a
+// cyclic graph; the search stops at the first column found.
+func hasFilterSurface(
+	start *compiledNode,
+	startSpec *nodeSpec,
+	edgeOrder map[*nodeSpec][]*edgeBuild,
+	compiled map[*nodeSpec]*compiledNode,
+) bool {
+	type frame struct {
+		cn   *compiledNode
+		spec *nodeSpec
 	}
-	for _, eb := range edges {
-		if eb.set.filterable {
-			return true
+	seen := map[*compiledNode]bool{start: true}
+	stack := []frame{{start, startSpec}}
+	for len(stack) > 0 {
+		f := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, c := range f.cn.cols {
+			if c.Filterable {
+				return true
+			}
+		}
+		for _, eb := range edgeOrder[f.spec] {
+			if !eb.set.filterable || eb.target == nil {
+				continue
+			}
+			next := compiled[eb.target]
+			if next == nil || seen[next] {
+				continue
+			}
+			seen[next] = true
+			stack = append(stack, frame{next, eb.target})
 		}
 	}
 	return false
@@ -818,7 +852,7 @@ type wireField struct {
 	depth  int  // 0 = declared on the outer struct, 1 = one embed deep, …
 	tagged bool // the name came from an explicit json tag (encoding/json's tie-break)
 	col    include.Column
-	hasCol bool // a col / sortCol tag was present on a json-tagged field
+	hasCol bool // a well-formed col / sortCol tag was parsed
 	field  reflect.StructField
 }
 
@@ -1018,44 +1052,48 @@ var timeType = reflect.TypeFor[time.Time]()
 // parseColTag reads f's column binding: `col:"sql_name[,sort][,filter]"`, or
 // the legacy `sortCol:"sql_name"` (≡ `col:"sql_name,sort"`). ok=false when
 // the field carries neither. Findings are returned, not fatal: both tags on
-// one field, an empty name, an unknown or repeated option, and `filter` on a
-// field whose type the operator set cannot compare.
+// one field, an empty name, an empty, unknown or repeated option, and
+// `filter` on a field whose type the operator set cannot compare. Every
+// finding names the tag the field actually carries.
 func parseColTag(f reflect.StructField) (c include.Column, ok bool, errs []string) {
 	raw, hasCol := f.Tag.Lookup("col")
 	legacy, hasLegacy := f.Tag.Lookup("sortCol")
+	tag := "col"
 	switch {
 	case hasCol && hasLegacy:
 		return c, false, []string{fmt.Sprintf("field %s carries both col and sortCol tags (declare one)", f.Name)}
 	case hasLegacy:
-		raw = legacy + ",sort"
+		tag, raw = "sortCol", legacy+",sort"
 	case !hasCol:
 		return c, false, nil
 	}
-	name, opts, _ := strings.Cut(raw, ",")
+	name, opts, hasOpts := strings.Cut(raw, ",")
 	if name == "" {
-		return c, false, []string{fmt.Sprintf("col tag on field %s has an empty column name", f.Name)}
+		return c, false, []string{fmt.Sprintf("%s tag on field %s has an empty column name", tag, f.Name)}
 	}
 	c = include.Column{Col: name, Type: derefType(f.Type)}
-	if opts != "" {
+	if hasOpts {
 		for _, o := range strings.Split(opts, ",") {
 			switch o {
+			case "":
+				errs = append(errs, fmt.Sprintf("%s tag on field %s has an empty option", tag, f.Name))
 			case "sort":
 				if c.Sortable {
-					errs = append(errs, fmt.Sprintf("col tag on field %s repeats option %q", f.Name, o))
+					errs = append(errs, fmt.Sprintf("%s tag on field %s repeats option %q", tag, f.Name, o))
 				}
 				c.Sortable = true
 			case "filter":
 				if c.Filterable {
-					errs = append(errs, fmt.Sprintf("col tag on field %s repeats option %q", f.Name, o))
+					errs = append(errs, fmt.Sprintf("%s tag on field %s repeats option %q", tag, f.Name, o))
 				}
 				c.Filterable = true
 			default:
-				errs = append(errs, fmt.Sprintf("col tag on field %s has unknown option %q (sort, filter)", f.Name, o))
+				errs = append(errs, fmt.Sprintf("%s tag on field %s has unknown option %q (sort, filter)", tag, f.Name, o))
 			}
 		}
 	}
 	if c.Filterable && !filterableKinds[c.Type.Kind()] && c.Type != timeType {
-		errs = append(errs, fmt.Sprintf("col tag on field %s: filter needs a bool, number, string or time.Time field (got %s)", f.Name, f.Type))
+		errs = append(errs, fmt.Sprintf("%s tag on field %s: filter needs a bool, number, string or time.Time field (got %s)", tag, f.Name, f.Type))
 	}
 	return c, true, errs
 }

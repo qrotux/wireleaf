@@ -102,7 +102,11 @@ flattened, depth-dominance for shadowed names). From that walk it derives:
   option; `filter` on a field that is not bool / number / string /
   `time.Time`; a filterable column whose json key is `and` or `or` (reserved
   for filter groups); a tag on an unexported or embedded field. On a
-  `json:"-"` or untagged field the tag is silently dropped.
+  `json:"-"` or untagged field the tag is silently dropped. Two legacy edge
+  cases changed with the `col` tag: an empty `sortCol:""` is now a finding (it
+  used to read as no tag), and a `sortCol` value is parsed with the same
+  `name[,option…]` grammar, so a comma inside it is an option, not part of the
+  SQL name.
 - the **sortCol whitelist** (`Edge.SortCols` on reverse edges): the
   `Sortable` columns, json name → `Col`.
 
@@ -166,7 +170,7 @@ finding, never a silent no-op):
 | `Sort` | Reverse only | Wire-form key, `-` prefix = descending; must be in the target's sortCol whitelist. |
 | `Args` | Reverse, Computed | `Arg("limit", …)` is rejected — `:limit` is engine-owned. |
 | `Guard` | everything but Computed | Cheap, pure, no-DB check over the parent row; `false` hides the value in the kind's own shape (`null` for to-one, an empty collection for to-many), no fetch. Illegal with `Required()`. |
-| `Filterable` | ToOne only | Lets a filter condition traverse the edge (`include.ResolveFilter`). Deny-by-default and **independent of `Includable`**. Illegal with `Guard()`; illegal when the target has neither a filterable column nor a filterable edge (nothing to filter on). To-many edges are rejected until the filter model carries quantifiers. |
+| `Filterable` | ToOne only | Lets a filter condition traverse the edge (`include.ResolveFilter`). Deny-by-default and **independent of `Includable`**. Illegal with `Guard()`; illegal when no filterable column is reachable from the target through filterable edges (nothing to filter on); an edge keyed `and` / `or` cannot be filterable (reserved for filter groups). To-many edges are rejected until the filter model carries quantifiers. |
 | `Required` | ToOne only | Never-null doc fact; implies membership in `Defaults()` (constructed by `Compile`). Its two policies are only legal here. |
 | `Inverse` | everything but Computed | Cross-checked: the named edge must exist on the target, point back, run the opposite direction, and (if it declares an Inverse itself) name this edge. |
 | `Envelope` | Builder, Node, everything but Computed | Wrapper style of the edge value (`include.Envelope{Key, Pagination}`); resolved edge > target node > graph into `include.Edge.Envelope`. Findings: `Envelope` on a computed edge; `Pagination` without `Key`; `Key == Pagination`; a name needing JSON escaping (`"`, `\`, control chars). `Inverse` does not sync it. |

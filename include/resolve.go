@@ -26,10 +26,17 @@ type Limits struct {
 	// MaxRows caps the rows ACTUALLY materialized by one hydrate call, root
 	// documents included. 0 means DefaultLimits.MaxRows.
 	MaxRows int
+	// MaxFilterDepth is the deepest edge chain one filter condition may
+	// traverse (`author.name` is depth 1; a root column depth 0). 0 means
+	// DefaultLimits.MaxFilterDepth.
+	MaxFilterDepth int
+	// MaxFilterNodes caps the size of one filter tree: conditions and groups
+	// together. 0 means DefaultLimits.MaxFilterNodes.
+	MaxFilterNodes int
 }
 
 // DefaultLimits is the engine-wide default.
-var DefaultLimits = Limits{MaxDepth: 4, MaxNodes: 50, MaxCost: 5000, MaxRows: 50000}
+var DefaultLimits = Limits{MaxDepth: 4, MaxNodes: 50, MaxCost: 5000, MaxRows: 50000, MaxFilterDepth: 2, MaxFilterNodes: 32}
 
 // ------------------------------------------------------------------ Options
 

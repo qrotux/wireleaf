@@ -40,9 +40,12 @@ type Resource interface {
 // Column is the SQL-side binding of one serialized wire field. graph.Compile
 // derives it from the `col` struct tag on the node's wire struct —
 // `col:"sql_name[,sort][,filter]"`; the legacy `sortCol:"sql_name"` tag reads
-// as `col:"sql_name,sort"`. Col is a compile-time constant from the tag and
-// never client input: a client names a column by its wire json key, which is
-// the map key on ColumnSource.Columns, and only ever as a lookup key.
+// as `col:"sql_name,sort"`. A client names a column by its wire json key —
+// the map key on ColumnSource.Columns — and only ever as a lookup key.
+//
+// graph.Compile guarantees Col is a compile-time constant from a struct tag
+// and never client input; a hand-built ColumnSource owns that guarantee
+// itself. An adapter treats Col as SQL identifier text on the strength of it.
 type Column struct {
 	// Col is the SQL-side column name. Never empty.
 	Col string
@@ -63,6 +66,9 @@ type Column struct {
 // hand-built Resource that does not is simply a node with no columns —
 // nothing filterable on it, and nothing sortable beyond what its edges'
 // SortCols already carry.
+//
+// Presence in the map is a projection binding, not a permission: check
+// Sortable / Filterable before sorting or filtering on an entry.
 //
 // ACCESSOR CONTRACT: Columns returns the LIVE map of an immutable compiled
 // graph, not a copy (it sits on the per-request filter-resolution path).
@@ -189,11 +195,11 @@ type Edge struct {
 
 	// SortCols whitelists the sortable wire keys of a reverse edge:
 	// wire json key → SQL-side sort key (what EdgeQuery.Sort carries, with the
-	// '-' prefix re-applied). graph.Compile builds it from `sortCol` wire-struct
-	// tags. A client :sort() key absent from the map fails the plan under
-	// SortStrict and falls back to Sort under SortFallback. nil → a client
-	// `:sort()` is an UNDECLARED argument decided by ArgPolicy (ArgsStrict
-	// fails the plan) and never reaches key lookup.
+	// '-' prefix re-applied). graph.Compile builds it from the `sort` option of
+	// the `col` wire-struct tags (legacy `sortCol`). A client :sort() key absent
+	// from the map fails the plan under SortStrict and falls back to Sort under
+	// SortFallback. nil → a client `:sort()` is an UNDECLARED argument decided
+	// by ArgPolicy (ArgsStrict fails the plan) and never reaches key lookup.
 	SortCols map[string]string
 
 	// Args declares the client-suppliable ":name(value)" arguments this edge

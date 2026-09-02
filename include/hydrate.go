@@ -22,8 +22,13 @@ import (
 // QueryArgs carries the pagination and filter parameters for a list query.
 // The endpoint-supplied RootFetcher receives these verbatim; the facade does
 // not interpret them.
+//
+// Where is the graph-checked filter — the output of ResolveFilter, carrying
+// SQL-side names only — passed to the RootFetcher verbatim; nil means no
+// filter. (The v0 opaque string is gone: an application-owned filter travels
+// in the RootFetcher closure, not in QueryArgs.)
 type QueryArgs struct {
-	Where string
+	Where ResolvedFilter
 	Sort  string
 	Page  int
 	Limit int

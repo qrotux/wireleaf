@@ -1750,6 +1750,14 @@ type colEmptyNameWire struct {
 	ID string `json:"id" col:",sort"`
 }
 
+type colLegacyEmptyNameWire struct {
+	ID string `json:"id" sortCol:""`
+}
+
+type colTrailingOptWire struct {
+	ID string `json:"id" col:"id,"`
+}
+
 type colFilterSliceWire struct {
 	ID   string   `json:"id"`
 	Tags []string `json:"tags" col:"tags,filter"`
@@ -1806,6 +1814,24 @@ func TestCompileColTagFindings(t *testing.T) {
 					PrimaryKey(func(r colRow) string { return r.ID })
 			},
 			want: "empty column name",
+		},
+		{
+			name: "empty legacy sortCol names the sortCol tag",
+			build: func(b *Builder) {
+				Node[colRow, colLegacyEmptyNameWire](b, "X").
+					Wire(func(r colRow, c *include.Ctx) colLegacyEmptyNameWire { return colLegacyEmptyNameWire{} }).
+					PrimaryKey(func(r colRow) string { return r.ID })
+			},
+			want: "sortCol tag on field ID has an empty column name",
+		},
+		{
+			name: "trailing empty option",
+			build: func(b *Builder) {
+				Node[colRow, colTrailingOptWire](b, "X").
+					Wire(func(r colRow, c *include.Ctx) colTrailingOptWire { return colTrailingOptWire{} }).
+					PrimaryKey(func(r colRow) string { return r.ID })
+			},
+			want: "has an empty option",
 		},
 		{
 			name: "filter on a slice field",
@@ -1932,6 +1958,34 @@ func TestCompileFilterableFindings(t *testing.T) {
 					Filterable()
 			},
 			want: "Filterable() edge to node Author, which has no filterable column and no filterable edge",
+		},
+		{
+			// The closure is a cycle with no column in it: one hop out of Book
+			// reaches Author, whose only filterable edge comes straight back.
+			// A one-hop check would call both edges useful.
+			name: "Filterable into a cycle with nothing to filter on",
+			build: func(b *Builder) {
+				book := okBook(b)
+				author := okAuthor(b)
+				book.Edge("author", ToOne[AuWire]()).
+					ForeignKey(func(r bkRow) string { return r.AuthorID }).
+					Filterable()
+				author.Edge("self", ToOne[AuWire]()).
+					ForeignKey(func(r auRow) string { return r.ID }).
+					Filterable()
+			},
+			want: "Filterable() edge to node Author, which has no filterable column and no filterable edge",
+		},
+		{
+			name: "Filterable edge keyed as a reserved group key",
+			build: func(b *Builder) {
+				book := okBook(b)
+				okCol(b)
+				book.Edge("or", ToOne[colWire]()).
+					ForeignKey(func(r bkRow) string { return r.AuthorID }).
+					Filterable()
+			},
+			want: `Filterable() edge key "or": the json keys "and" and "or" are reserved for filter groups`,
 		},
 	}
 	for _, tc := range cases {
