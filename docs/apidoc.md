@@ -201,6 +201,10 @@ the executable contract.
 Helpers on this seam: `DerefType(t reflect.Type) reflect.Type` strips pointer
 indirections; `RefPrefix` is the shared `#/components/schemas/` constant.
 
+The canonical `reflector` implementation also accepts a `doc` struct tag as an
+alias of `description` (see docs/reflector.md), so wire types, bodies and
+input structs can share one tag dialect.
+
 ## Components: registry, verification, merge
 
 ```go

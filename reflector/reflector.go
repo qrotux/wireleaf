@@ -140,6 +140,24 @@ func (e *engine) collect(types []reflect.Type) error {
 				params.Schema.RemoveType(jsonschema.Null)
 			}
 		}),
+		// `doc` is the tag dialect huma uses on input structs; accepting it on
+		// wire types and bodies gives the application ONE dialect. `description`
+		// stays for swaggest compatibility; the two disagreeing is a bug, not a
+		// preference, so it fails reflection.
+		jsonschema.InterceptProp(func(params jsonschema.InterceptPropParams) error {
+			if !params.Processed {
+				return nil
+			}
+			doc, ok := params.Field.Tag.Lookup("doc")
+			if !ok {
+				return nil
+			}
+			if d := params.PropertySchema.Description; d != nil && *d != doc {
+				return fmt.Errorf("reflector: %s: doc and description tags disagree (%q vs %q)", strings.Join(append(append([]string{}, params.Path...), params.Name), "."), doc, *d)
+			}
+			params.PropertySchema.Description = &doc
+			return nil
+		}),
 	}
 	for _, t := range types {
 		st := apidoc.DerefType(t)

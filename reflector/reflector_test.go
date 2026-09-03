@@ -537,3 +537,35 @@ func TestReflectedSchemaAgreesWithMarshalledBytes(t *testing.T) {
 func isNullOnly(n *apidoc.IRNode) bool {
 	return n != nil && len(n.Types) == 1 && n.Types[0] == "null"
 }
+
+type docTagHolder struct {
+	A string `json:"a" doc:"from doc"`
+	B string `json:"b" doc:"same" description:"same"`
+	C string `json:"c" description:"only description"`
+}
+
+type docTagConflict struct {
+	A string `json:"a" doc:"one" description:"two"`
+}
+
+func TestDocTagBecomesDescription(t *testing.T) {
+	got, err := (&reflector.Reflector{}).ReflectComponents(
+		[]reflect.Type{reflect.TypeOf(docTagHolder{})}, nil)
+	if err != nil {
+		t.Fatalf("ReflectComponents: %v", err)
+	}
+	want := map[string]string{"a": "from doc", "b": "same", "c": "only description"}
+	for _, p := range got["docTagHolder"].Props {
+		if p.Schema.Description != want[p.Name] {
+			t.Errorf("%s: description = %q, want %q", p.Name, p.Schema.Description, want[p.Name])
+		}
+	}
+}
+
+func TestDocTagDisagreementIsAnError(t *testing.T) {
+	_, err := (&reflector.Reflector{}).ReflectComponents(
+		[]reflect.Type{reflect.TypeOf(docTagConflict{})}, nil)
+	if err == nil || !strings.Contains(err.Error(), "doc and description tags disagree") {
+		t.Fatalf("err = %v, want a doc/description disagreement", err)
+	}
+}
