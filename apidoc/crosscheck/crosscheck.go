@@ -64,11 +64,11 @@ type Validator struct {
 func Compile(components map[string]apidoc.Schema, name string) (*Validator, error) {
 	if _, ok := components[name]; !ok {
 		return nil, fmt.Errorf("crosscheck: no component named %q (have %s)",
-			name, strings.Join(sortedKeys(components), ", "))
+			name, strings.Join(slices.Sorted(maps.Keys(components)), ", "))
 	}
 
 	defs := make(map[string]any, len(components))
-	for _, n := range sortedKeys(components) {
+	for _, n := range slices.Sorted(maps.Keys(components)) {
 		doc, err := decodeComponent(components[n])
 		if err != nil {
 			return nil, fmt.Errorf("crosscheck: component %q: %w", n, err)
@@ -166,7 +166,7 @@ func rewriteRefs(v any) any {
 func checkRefs(defs map[string]any) error {
 	var missing []string
 	seen := map[string]bool{}
-	for _, owner := range sortedKeys(defs) {
+	for _, owner := range slices.Sorted(maps.Keys(defs)) {
 		for _, target := range collectRefs(defs[owner]) {
 			if _, ok := defs[target]; ok || seen[owner+"->"+target] {
 				continue
@@ -177,7 +177,7 @@ func checkRefs(defs map[string]any) error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("crosscheck: dangling component ref(s): %s (known: %s)",
-			strings.Join(missing, ", "), strings.Join(sortedKeys(defs), ", "))
+			strings.Join(missing, ", "), strings.Join(slices.Sorted(maps.Keys(defs)), ", "))
 	}
 	return nil
 }
@@ -187,7 +187,7 @@ func collectRefs(v any) []string {
 	var out []string
 	switch t := v.(type) {
 	case map[string]any:
-		for _, k := range sortedKeys(t) {
+		for _, k := range slices.Sorted(maps.Keys(t)) {
 			out = append(out, collectRefs(t[k])...)
 		}
 	case []any:
@@ -203,9 +203,4 @@ func collectRefs(v any) []string {
 		}
 	}
 	return out
-}
-
-// sortedKeys returns the keys of m in ascending order.
-func sortedKeys[V any](m map[string]V) []string {
-	return slices.Sorted(maps.Keys(m))
 }

@@ -132,11 +132,12 @@ type Request struct {
 // fetchers may be invoked concurrently. Anything a fetcher needs to write per
 // request belongs behind its own synchronization in Env.
 //
-// The one sanctioned exception is the request-scoped loader cache reached
-// through LoaderState: it is unexported, mutex-protected and concurrent-safe
-// by construction, so graph.Loader can keep per-request state without any
-// application-visible mutation of Ctx. The zero Ctx value is usable — the
-// cache initializes lazily under the mutex.
+// The one sanctioned exception is the request-scoped state reached through
+// State: it is unexported, mutex-protected and concurrent-safe by
+// construction, so library plumbing in other packages (the loader package's
+// per-request cache) can keep per-request state without any
+// application-visible mutation of Ctx. The zero Ctx value is usable — the map
+// initializes lazily under the mutex.
 //
 // The second exception is the row counter behind Rows: Materialize
 // increments it (single-threaded, no lock) as levels are serialized, so the
@@ -173,11 +174,12 @@ type Ctx struct {
 	// above applies.
 	Policies Policies
 
-	// mu guards loaders — the only mutable state on Ctx.
+	// mu guards state — the only mutable state on Ctx.
 	mu sync.Mutex
-	// loaders holds request-scoped per-loader state, keyed by loader identity
-	// (a *graph.Loader pointer). Created lazily on first use.
-	loaders map[any]any
+	// state holds request-scoped state objects, keyed by the identity of
+	// whatever owns them (a *loader.Loader pointer). Created lazily on first
+	// use.
+	state map[any]any
 
 	// rows counts documents materialized by this request (root included);
 	// maxRows is the budget copied off the root PlanNode when Materialize
@@ -214,23 +216,23 @@ func (c *Ctx) QueryValue(name string) string {
 	return c.Request.Query.Get(name)
 }
 
-// LoaderState returns this request's state object for key, creating it with mk
-// on first use. The map and the entry are created under Ctx's mutex, so the
-// zero Ctx value works and concurrent callers all observe the same object.
-// mk runs under the Ctx mutex — it must only allocate, never touch the Ctx.
-//
-// Library-internal plumbing for graph.Loader; NOT for application use. The
-// method is exported only because graph lives in another package.
-func (c *Ctx) LoaderState(key any, mk func() any) any {
+// State returns this request's state object for key, creating it with mk on
+// first use. It is the request-scoped slot library plumbing in other packages
+// (the loader package's per-request cache) hangs its data on: the map and the
+// entry are created under Ctx's mutex, so the zero Ctx value works and
+// concurrent callers observe one object. mk runs under the mutex — it must
+// only allocate, never touch the Ctx. NOT for application use; put
+// application state in Env.
+func (c *Ctx) State(key any, mk func() any) any {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.loaders == nil {
-		c.loaders = make(map[any]any)
+	if c.state == nil {
+		c.state = make(map[any]any)
 	}
-	st, ok := c.loaders[key]
+	st, ok := c.state[key]
 	if !ok {
 		st = mk()
-		c.loaders[key] = st
+		c.state[key] = st
 	}
 	return st
 }
@@ -241,7 +243,7 @@ func (c *Ctx) LoaderState(key any, mk func() any) any {
 // It has NO caller inside wireleaf — it is EXTERNAL API, and deliberately so.
 // Fetchers, MapFns and EnrichFns live in the application, receive only a *Ctx,
 // and need a context.Context to reach the database and to honor cancellation
-// (graph.Loader's fetch contract names this method for exactly that). Do not
+// (loader.Loader's fetch contract names this method for exactly that). Do not
 // remove it as unused.
 func (c *Ctx) StdContext() context.Context {
 	if c.Context != nil {

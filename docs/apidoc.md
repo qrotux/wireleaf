@@ -262,6 +262,10 @@ keys, so a non-includable default is part of the wire shape), dedupes by
 distinct nodes sharing one name. Edge keys are stitched in sorted order, so
 repeated emission is byte-identical.
 
+Reflecting a node's wire struct needs a zero-value sample: a node supplies it
+by implementing the optional `WireProvider` Resource seam (`WireSample() any`,
+which `graph.Compile`'s nodes satisfy).
+
 Stitched edge keys are optional — the value shape alone encodes nullability —
 except a `graph.Required()` to-one edge, which is stitched as a bare `$ref`
 **and** listed in `required`. An edge key colliding with a wire field replaces

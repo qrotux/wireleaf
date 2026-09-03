@@ -19,10 +19,8 @@ import (
 
 	"github.com/qrotux/wireleaf/apidoc"
 	"github.com/qrotux/wireleaf/include"
+	"github.com/qrotux/wireleaf/include/filters"
 )
-
-// wireSampler is the graph node seam apidoc uses to learn a node's wire type.
-type wireSampler interface{ WireSample() any }
 
 // Bound is the per-resource facade: the resource, its Wire type W, the
 // Hydrator, and the operation decorators, in one value a handler closes over.
@@ -37,7 +35,7 @@ type Bound[W any] struct {
 // Register of an operation whose output carries Node[W]. Wiring errors panic.
 func Bind[W any](a *API, node string) *Bound[W] {
 	res := a.g.Resource(node) // panics "graph: unknown resource <name>" on a typo
-	ws, ok := res.(wireSampler)
+	ws, ok := res.(apidoc.WireProvider)
 	if !ok {
 		panic(fmt.Sprintf("adapters/huma: Bind: node %q has no wire type", node))
 	}
@@ -189,12 +187,12 @@ func (b *Bound[W]) parseWhere(ctx context.Context, raw string) (include.Filter, 
 		if r == nil {
 			return nil, errors.New("adapters/huma: bracket filter needs Attach (no request snapshot on the context)")
 		}
-		return include.ParseFilterQuery(b.res, r.Query)
+		return filters.ParseQuery(b.res, r.Query)
 	}
 	if raw == "" {
 		return nil, nil
 	}
-	return include.ParseFilterJSON(b.res, []byte(raw))
+	return filters.ParseJSON(b.res, []byte(raw))
 }
 
 func optString(s string) *string {

@@ -1,4 +1,4 @@
-package graph
+package loader
 
 import (
 	"errors"
@@ -17,7 +17,7 @@ func TestLoaderWarmGet(t *testing.T) {
 	var calls atomic.Int32
 	var seen [][]string
 	var mu sync.Mutex
-	ld := NewLoader(func(c *include.Ctx, keys []string) (map[string]int, error) {
+	ld := New(func(c *include.Ctx, keys []string) (map[string]int, error) {
 		calls.Add(1)
 		mu.Lock()
 		seen = append(seen, append([]string(nil), keys...))
@@ -85,7 +85,7 @@ func TestLoaderWarmGet(t *testing.T) {
 // caches "asked, absent" — Get reports (zero,false) and no refetch happens.
 func TestLoaderNegativeCache(t *testing.T) {
 	var calls atomic.Int32
-	ld := NewLoader(func(c *include.Ctx, keys []string) (map[string]string, error) {
+	ld := New(func(c *include.Ctx, keys []string) (map[string]string, error) {
 		calls.Add(1)
 		return map[string]string{}, nil // never finds anything
 	})
@@ -114,7 +114,7 @@ func TestLoaderSingleFlight(t *testing.T) {
 	var calls atomic.Int32
 	var gate sync.WaitGroup
 	gate.Add(1)
-	ld := NewLoader(func(c *include.Ctx, keys []string) (map[string]int, error) {
+	ld := New(func(c *include.Ctx, keys []string) (map[string]int, error) {
 		calls.Add(1)
 		gate.Wait() // hold the fetch open so every goroutine piles up behind it
 		return map[string]int{"k": 7}, nil
@@ -158,7 +158,7 @@ func TestLoaderSingleFlight(t *testing.T) {
 func TestLoaderErrorNotPoisoned(t *testing.T) {
 	boom := errors.New("boom")
 	var calls atomic.Int32
-	ld := NewLoader(func(c *include.Ctx, keys []string) (map[string]int, error) {
+	ld := New(func(c *include.Ctx, keys []string) (map[string]int, error) {
 		if calls.Add(1) == 1 {
 			return nil, boom
 		}
@@ -190,7 +190,7 @@ func TestLoaderErrorReachesWaiters(t *testing.T) {
 	var gate sync.WaitGroup
 	gate.Add(1)
 	var calls atomic.Int32
-	ld := NewLoader(func(c *include.Ctx, keys []string) (map[string]int, error) {
+	ld := New(func(c *include.Ctx, keys []string) (map[string]int, error) {
 		calls.Add(1)
 		gate.Wait()
 		return nil, boom
@@ -227,7 +227,7 @@ func TestLoaderErrorReachesWaiters(t *testing.T) {
 // without touching the fetch fn.
 func TestLoaderGetNeverFetches(t *testing.T) {
 	var calls atomic.Int32
-	ld := NewLoader(func(c *include.Ctx, keys []string) (map[string]int, error) {
+	ld := New(func(c *include.Ctx, keys []string) (map[string]int, error) {
 		calls.Add(1)
 		return map[string]int{"k": 1}, nil
 	})
@@ -246,7 +246,7 @@ func TestLoaderGetNeverFetches(t *testing.T) {
 func TestLoaderGetBlocksOnInflight(t *testing.T) {
 	release := make(chan struct{})
 	fetchEntered := make(chan struct{})
-	ld := NewLoader(func(c *include.Ctx, keys []string) (map[string]int, error) {
+	ld := New(func(c *include.Ctx, keys []string) (map[string]int, error) {
 		close(fetchEntered)
 		<-release
 		return map[string]int{"k": 99}, nil
@@ -287,7 +287,7 @@ func TestLoaderGetBlocksOnInflight(t *testing.T) {
 // nothing the first warmed, and the zero Ctx value works.
 func TestLoaderPerCtxIsolation(t *testing.T) {
 	var calls atomic.Int32
-	ld := NewLoader(func(c *include.Ctx, keys []string) (map[string]int, error) {
+	ld := New(func(c *include.Ctx, keys []string) (map[string]int, error) {
 		calls.Add(1)
 		return map[string]int{"k": 5}, nil
 	})
@@ -308,7 +308,7 @@ func TestLoaderPerCtxIsolation(t *testing.T) {
 	}
 
 	// Two loaders on one Ctx keep separate state (keyed by loader identity).
-	other := NewLoader(func(c *include.Ctx, keys []string) (map[string]int, error) {
+	other := New(func(c *include.Ctx, keys []string) (map[string]int, error) {
 		return map[string]int{"k": 1000}, nil
 	})
 	if err := other.Warm(c1, "k"); err != nil {
@@ -329,7 +329,7 @@ func TestLoaderFetchPanic(t *testing.T) {
 	var calls atomic.Int32
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	ld := NewLoader(func(c *include.Ctx, keys []string) (map[string]int, error) {
+	ld := New(func(c *include.Ctx, keys []string) (map[string]int, error) {
 		if calls.Add(1) == 1 {
 			close(entered)
 			<-release
@@ -383,7 +383,7 @@ func TestLoaderFetchPanic(t *testing.T) {
 	}
 }
 
-// TestLoaderNilFetch: a Loader built without NewLoader fails loudly instead of
+// TestLoaderNilFetch: a Loader built without New fails loudly instead of
 // silently negative-caching every key.
 func TestLoaderNilFetch(t *testing.T) {
 	var ld Loader[string, int]
@@ -408,7 +408,7 @@ func TestLoaderNilFetch(t *testing.T) {
 // TestLoaderPresentZeroValue: a key present in the fetch result with the zero
 // value is a HIT, not a miss.
 func TestLoaderPresentZeroValue(t *testing.T) {
-	ld := NewLoader(func(c *include.Ctx, keys []string) (map[string]int, error) {
+	ld := New(func(c *include.Ctx, keys []string) (map[string]int, error) {
 		return map[string]int{"k": 0}, nil
 	})
 	c := &include.Ctx{}
@@ -429,7 +429,7 @@ func TestLoaderGetBlocksThroughFailure(t *testing.T) {
 	boom := errors.New("boom")
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	ld := NewLoader(func(c *include.Ctx, keys []string) (map[string]int, error) {
+	ld := New(func(c *include.Ctx, keys []string) (map[string]int, error) {
 		close(entered)
 		<-release
 		return nil, boom

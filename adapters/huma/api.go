@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 
 	humav2 "github.com/danielgtaylor/huma/v2"
@@ -94,7 +94,7 @@ func New(g *graph.Graph, opts include.Options, title, version string, o ...Optio
 	if err != nil {
 		panic(fmt.Sprintf("adapters/huma: emitting graph components: %v", err))
 	}
-	for _, name := range sortedKeys(frags) {
+	for _, name := range slices.Sorted(maps.Keys(frags)) {
 		c.Add(name, frags[name])
 	}
 	cfgOpts := append([]ConfigOpt{WithRegistry(c)}, ao.cfg...)
@@ -321,15 +321,4 @@ func (a *API) checkBound(t reflect.Type) {
 		}
 	}
 	walk(t)
-}
-
-// sortedKeys returns m's keys in sorted order — a deterministic component
-// emission order for a deterministic document.
-func sortedKeys[V any](m map[string]V) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

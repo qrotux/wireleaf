@@ -77,8 +77,8 @@ func (h *Hydrator) ByID(c *Ctx, id string, inc string) (json.RawMessage, error) 
 	return materializeOne(plan, rows[0], c)
 }
 
-// Query runs the list pipeline: plan (400 before fetch), budget pre-check,
-// fetch, materialize.
+// Query runs the list pipeline. The include plan resolves before fetch, so a
+// malformed include is a 400 and never reaches the fetcher.
 func (h *Hydrator) Query(c *Ctx, q QueryArgs, inc string, fetch ListFetcher) (QueryResult, error) {
 	c = h.ctx(c)
 	plan, err := h.plan(inc)

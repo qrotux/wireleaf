@@ -109,7 +109,7 @@ type IDsFixture struct {
 	IDOf func(doc any) string
 }
 
-// LoaderFixture describes the data a graph.Loader fetch function is checked
+// LoaderFixture describes the data a loader.Loader fetch function is checked
 // against.
 type LoaderFixture[K comparable] struct {
 	// Ctx is the request context handed to fetch, shared by every call;
@@ -536,8 +536,8 @@ func checkConcurrentIDs(c *include.Ctx, fn include.FetchByIDs, fx IDsFixture) []
 
 // ------------------------------------------------------------------ Loader fetch
 
-// RunLoaderFetch checks a graph.Loader fetch function (the argument of
-// graph.NewLoader) against its contract, as subtests under name. Run the suite
+// RunLoaderFetch checks a loader.Loader fetch function (the argument of
+// loader.New) against its contract, as subtests under name. Run the suite
 // with -race.
 func RunLoaderFetch[K comparable, V any](t *testing.T, name string, fetch func(*include.Ctx, []K) (map[K]V, error), fx LoaderFixture[K]) {
 	t.Helper()

@@ -227,7 +227,7 @@ copy it by value. The zero value is usable.
 - `func (c *Ctx) Rows() int` — documents materialized so far in this request,
   root included; the actual-cost counterpart of `PlanNode.Cost` for cost-based
   rate limiting. The counter is the second engine-written field on `Ctx`
-  (after the loader cache); it is single-threaded and needs no lock.
+  (after the `State` map); it is single-threaded and needs no lock.
 - `func (c *Ctx) StdContext() context.Context` — the request Go context,
   falling back to `context.Background()`; for fetchers/`MapFn`s/`EnrichFn`s,
   which receive only a `*Ctx` but need cancellation for DB calls.
@@ -243,8 +243,10 @@ copy it by value. The zero value is usable.
   `Options`): the engine-wide fallback set; the zero value is the permissive
   default for every field, and a per-edge override on `Edge` wins where set.
   Set it at construction; the read-only contract applies.
-- `LoaderState` is library-internal plumbing for `graph.Loader` — not for
-  application use.
+- `State(key any, mk func() any) any` is the request-scoped per-key slot
+  library plumbing in other packages hangs its data on (the `loader`
+  package's per-request cache) — not for application use; application state
+  belongs in `Env`.
 
 ## Parsing
 
@@ -421,7 +423,7 @@ registry when the caller left it nil.
   `HasMore`, echoing `q.Page` / `q.Limit`.
 - `Hydrate` is the POST/PATCH path: materializes an already-loaded document.
 
-Both families run one pipeline (`budgetCheck` → fetch → `Materialize`); a
+Both families run one pipeline (budget pre-check → fetch → `Materialize`); a
 `RootFetcher` is adapted to a `ListFetcher` internally.
 
 ```go
@@ -504,7 +506,7 @@ type RawInputs struct {
     Page   int
     Cursor string
     Limit  int
-    Where  Filter // already parsed (ParseFilterJSON / ParseFilterQuery); nil = none
+    Where  Filter // already parsed (filters.ParseJSON / ParseQuery); nil = none
 }
 
 func ResolveInputs(root Resource, raw RawInputs, opts Options) (QueryArgs, error)
@@ -621,23 +623,32 @@ hops the tree will run as correlated subqueries, the number to reserve in an
 application cost bucket next to `plan.Cost`.
 
 `examples/filter/main.go` is the runnable reference for the application-owned
-half: it unwraps a `{"where": …}` envelope into `ParseFilterJSON` and prints
+half: it unwraps a `{"where": …}` envelope into `filters.ParseJSON` and prints
 the `ResolvedFilter` as SQL — joins, the three `EXISTS` templates, and bound
 arguments — without a database.
 
-### Parsers
+### Parsers (`include/filters`)
 
 A syntax is a product decision, so the AST above is the contract and an
 application may always write its own parser against it. Two spellings are
-common enough to ship:
+common enough to ship, and they sit in a subpackage of their own so that the
+spelling of a filter never becomes part of judging one — `include` keeps the
+model and `ResolveFilter`, `include/filters` the grammars:
 
 ```go
-func ParseFilterJSON(root Resource, raw []byte) (Filter, error)
-func ParseFilterQuery(root Resource, values url.Values) (Filter, error)
+package filters
+
+func ParseJSON(root include.Resource, raw []byte) (include.Filter, error)
+func ParseQuery(root include.Resource, values url.Values) (include.Filter, error)
+```
+
+`FilterOpsFor` stays in `include`, next to the matrix it reads:
+
+```go
 func FilterOpsFor(t reflect.Type) []FilterOp
 ```
 
-`ParseFilterJSON` parses ONE filter node — the value of a request's `where`
+`ParseJSON` parses ONE filter node — the value of a request's `where`
 key; the envelope around it stays the application's:
 
 ```
@@ -665,7 +676,7 @@ rather than all of them — a client never sizes the 400 body. Values pass
 through as `encoding/json` decoded them (a JSON number is a `float64` even for
 an int column); the adapter coerces by `Column.Type`.
 
-`ParseFilterQuery` is the same AST from a query string — the spelling a browser
+`ParseQuery` is the same AST from a query string — the spelling a browser
 or a `curl` can type — reading only the keys that start with `where[` and
 ignoring every other parameter, so it composes with `page`, `include` and the
 rest:
@@ -675,7 +686,7 @@ where[<dotted.path>][<op>]=<value>
 where[or][<i>][<dotted.path>][<op>]=<value>       where[and][<i>]…
 ```
 
-Paths and quantifier suffixes are exactly `ParseFilterJSON`'s
+Paths and quantifier suffixes are exactly `ParseJSON`'s
 (`where[works.title~][eq]=x`), and groups nest — a group's members are its
 distinct indices, ordered numerically, each member itself an AND of the keys
 that share its index. Bracket keys carry no precedence, so **siblings at one
@@ -744,7 +755,7 @@ column is `NULL` makes `cond` — and so `NOT cond` — `NULL`, so that child is
 neither selected under `any` / `none` nor a violation under `all`; the core
 neither touches values nor compensates for it.
 
-The spelling `ParseFilterJSON` accepts, and the one to keep in a hand-written
+The spelling `ParseJSON` accepts, and the one to keep in a hand-written
 parser: no suffix is `any` (`{"reviews.rating": {"gt": 4}}`), `*` is `all`
 (`{"reviews.rating*": {"gt": 4}}`), `~` is `none` (`{"reviews.rating~":
 {"gt": 4}}`); the suffix sits on the field when the path has exactly one

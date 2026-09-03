@@ -2,7 +2,9 @@ package apidoc
 
 import (
 	"errors"
+	"maps"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -84,11 +86,11 @@ func TestUnionSchemaOneOfInVariantOrder(t *testing.T) {
 			t.Fatalf("oneOf[%d] has no properties: %v", i, frag)
 		}
 		if len(props) != len(keys) {
-			t.Fatalf("oneOf[%d] properties = %v, want keys %v", i, sortedKeys(props), keys)
+			t.Fatalf("oneOf[%d] properties = %v, want keys %v", i, slices.Sorted(maps.Keys(props)), keys)
 		}
 		for _, k := range keys {
 			if _, ok := props[k]; !ok {
-				t.Fatalf("oneOf[%d] missing property %q (have %v)", i, k, sortedKeys(props))
+				t.Fatalf("oneOf[%d] missing property %q (have %v)", i, k, slices.Sorted(maps.Keys(props)))
 			}
 		}
 	}

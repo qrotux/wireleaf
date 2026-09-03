@@ -1,7 +1,9 @@
 package apidoc
 
 import (
+	"maps"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -111,7 +113,7 @@ func TestDSLPickOmitRequiredAll(t *testing.T) {
 	m := fixture().Pick("id", "note").Map()
 	props := m["properties"].(map[string]any)
 	if len(props) != 2 {
-		t.Fatalf("pick left %v", sortedKeys(props))
+		t.Fatalf("pick left %v", slices.Sorted(maps.Keys(props)))
 	}
 	if got := m["required"]; !reflect.DeepEqual(got, []any{"id"}) {
 		t.Fatalf("required after pick = %v", got)

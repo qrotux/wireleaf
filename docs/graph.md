@@ -9,8 +9,7 @@ validates the whole declaration at once and freezes it into an immutable
 through — every compiled node is an `include.Resource`, and `*Graph` is the
 `include.Registry` that routes fetcher lookups — and what the `apidoc` layer
 reads to emit OpenAPI components (`WireSample`, `FieldVerdicts`,
-`IsDocExternal` are its duck-typed seams). The package also ships
-`Loader[K, V]`, a request-scoped batch cache for side data, and the
+`IsDocExternal` are its duck-typed seams). The package also ships the
 `graph/loadertest` subpackage, a contract harness for fetchers.
 
 ## Core types
@@ -25,7 +24,6 @@ reads to emit OpenAPI components (`WireSample`, `FieldVerdicts`,
 | `OneToManyRelation`, `ManyToManyRelation` | Both directions of a link between two handles in one chained declaration (`OneToMany`, `ManyToMany`). |
 | `Graph` | Immutable result of `Compile`; implements `include.Registry`. |
 | `Finding`, `CompileError` | The compile-time error taxonomy. |
-| `Loader[K, V]` | Request-scoped batch loader for out-of-graph side data. |
 
 Nothing validates at declaration time: every builder method only records, and
 every check runs in `Compile`. After `Compile` the builder is dead — **any**
@@ -72,7 +70,7 @@ func (h *NodeHandle[Row, Wire]) Edge(key string, kind EdgeKind) *EdgeBuilder[Row
 - **`PrimaryKey`** — extracts a row's own id: the identity the engine batches
   and indexes by, and what a `ForeignKey` elsewhere points at. Mandatory.
 - **`Enrich`** — optional batch hook over a whole level's rows before `Wire`;
-  the sanctioned place to side-load data (typically `Loader.Warm`), once per
+  the sanctioned place to side-load data (typically `loader.Loader.Warm`), once per
   level rather than per row.
 - **`Defaults`** — edge keys included when the client asks for none. Repeated
   calls **append**. Every `Required()` edge key is auto-appended by `Compile`
@@ -500,39 +498,8 @@ compiled graph *is* the registry; there is nothing else to register.
 
 ## Loader
 
-```go
-func NewLoader[K comparable, V any](
-    fetch func(c *include.Ctx, keys []K) (map[K]V, error)) *Loader[K, V]
-func (l *Loader[K, V]) Warm(c *include.Ctx, keys ...K) error
-func (l *Loader[K, V]) Get(c *include.Ctx, key K) (V, bool)
-```
-
-`Loader` batches side data that is not part of the graph (permissions,
-counters, flags) for one request. The loader itself is a package-level
-application value holding no data; per-request state lives on the
-`*include.Ctx` via `Ctx.LoaderState`, keyed by the loader pointer, and dies
-with the request. Two phases:
-
-- **`Warm`** fetches: it batches every still-unknown key into one fetch call,
-  awaits keys another goroutine is already fetching (single-flight), and
-  skips keys already settled — found and not-found alike are cached, so a key
-  that settles is fetched at most once per request. A fetch **error** caches
-  nothing: the keys revert to unknown, every waiter on that in-flight fetch
-  receives the error, and a later `Warm` retries. Zero keys → nil
-  immediately (before even the nil-fetch check). A fetch **panic** is
-  detected by a deferred settler: the claimed entries are failed and removed
-  so waiters unblock, then the panic continues to unwind.
-- **`Get`** never fetches. An unwarmed key yields `(zero, false)`; a key
-  whose `Warm` is in flight blocks until it settles (a failed fetch also
-  yields `(zero, false)`).
-
-Fetch contract (checked by `loadertest.RunLoaderFetch`): safe for concurrent
-use; return only requested keys; never call this loader back for keys it was
-handed (self-deadlock); honor `c.StdContext()` cancellation — that is the only
-way waiters unblock early; omit an absent key (negative-cached, never
-refetched) rather than erroring. A hand-assembled `Loader{}` has a nil fetch:
-every non-empty `Warm` returns `"graph: Loader has nil fetch (use NewLoader)"`
-and every `Get` misses — loudly, instead of negative-caching everything.
+The request-scoped batch loader for side data lives in its own package: see
+[loader.md](loader.md).
 
 ## loadertest
 

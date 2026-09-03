@@ -3,7 +3,9 @@ package apidoc
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -230,7 +232,7 @@ func (n *IRNode) checkInvariants() error {
 	}
 	// Extensions carry x-* and unknown vendor keys ONLY: a standard keyword
 	// must go through its typed field, or the two would fight at serialization.
-	for _, k := range sortedKeys(n.Extensions) {
+	for _, k := range slices.Sorted(maps.Keys(n.Extensions)) {
 		if standardKeywords[k] {
 			return n.invErr("standard keyword %q must not ride in Extensions", k)
 		}
@@ -443,7 +445,7 @@ func collectRefs(v any) []string {
 					}
 				}
 			}
-			for _, k := range sortedKeys(t) {
+			for _, k := range slices.Sorted(maps.Keys(t)) {
 				if k == "$ref" {
 					continue
 				}

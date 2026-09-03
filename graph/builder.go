@@ -181,7 +181,7 @@ func (h *NodeHandle[Row, W]) PrimaryKey(fn func(Row) string) *NodeHandle[Row, W]
 
 // Enrich installs the optional batch hook run over a WHOLE level's rows before
 // Wire — the sanctioned place to side-load data the mapping needs (typically
-// graph.Loader.Warm), once per level rather than once per row. It is the
+// `loader.Loader.Warm`), once per level rather than once per row. It is the
 // builder's half of include.Resource.Enrich.
 //
 // The closure is typed by THIS handle's Row (a mismatch is a Go compile

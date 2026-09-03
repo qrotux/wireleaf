@@ -23,11 +23,6 @@ func marshalValue(v any) ([]byte, error) {
 	return bytes.TrimRight(b.Bytes(), "\n"), nil
 }
 
-// sortedKeys returns the keys of m in ascending order.
-func sortedKeys[V any](m map[string]V) []string {
-	return slices.Sorted(maps.Keys(m))
-}
-
 // irWriter accumulates a JSON object with an explicit, order-preserving key
 // sequence. Keys are known-safe literals; values go through json.Marshal.
 type irWriter struct {
@@ -210,7 +205,7 @@ func (n *IRNode) MarshalJSON() ([]byte, error) {
 	if len(n.DependentRequired) > 0 {
 		w.key("dependentRequired")
 		w.buf.WriteByte('{')
-		for i, k := range sortedKeys(n.DependentRequired) {
+		for i, k := range slices.Sorted(maps.Keys(n.DependentRequired)) {
 			if i > 0 {
 				w.buf.WriteByte(',')
 			}
@@ -307,7 +302,7 @@ func (n *IRNode) MarshalJSON() ([]byte, error) {
 	}
 
 	// extensions, sorted by key
-	for _, k := range sortedKeys(n.Extensions) {
+	for _, k := range slices.Sorted(maps.Keys(n.Extensions)) {
 		w.set(k, n.Extensions[k])
 	}
 

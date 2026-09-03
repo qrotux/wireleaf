@@ -26,18 +26,18 @@ package apidoc
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/qrotux/wireleaf/include"
 )
 
-// wireProvider is the capability emission needs from a node beyond
-// include.Resource: a zero-value Wire sample to reflect. graph.Define supplies
-// it via WireSample(). Kept off include.Resource so the engine stays free of
-// OpenAPI concerns.
-type wireProvider interface {
+// WireProvider is the optional Resource seam the doc layer and adapters read
+// to learn a node's wire type: graph.Compile's nodes implement it.
+type WireProvider interface {
 	WireSample() any
 }
 
@@ -154,7 +154,7 @@ func emitFragments(r Reflector, nodes []include.Resource) (map[string]*IRNode, e
 
 	// Stitch onto graph-NODE components only; auxiliary sub-schemas are not
 	// graph nodes and get no edges.
-	for _, name := range sortedKeys(nodeNames) {
+	for _, name := range slices.Sorted(maps.Keys(nodeNames)) {
 		base, ok := out[name]
 		if !ok || base == nil {
 			return nil, fmt.Errorf("apidoc: reflector did not emit a component for node %q", name)
@@ -236,10 +236,10 @@ func defaultSet(node include.Resource) map[string]bool {
 }
 
 // wireType returns the reflect.Type of a node's Wire struct (the dynamic type
-// of its WireSample()). Errors if the node is not a wireProvider or its sample
+// of its WireSample()). Errors if the node is not a WireProvider or its sample
 // is a nil interface.
 func wireType(node include.Resource) (reflect.Type, error) {
-	wp, ok := node.(wireProvider)
+	wp, ok := node.(WireProvider)
 	if !ok {
 		return nil, fmt.Errorf("apidoc: node %q does not provide a WireSample()", node.Name())
 	}
@@ -270,7 +270,7 @@ func stitchEdges(base *IRNode, node include.Resource) error {
 		return fmt.Errorf("apidoc: node %q base schema is a %s, want an object to stitch edges into", node.Name(), base.Kind)
 	}
 	inDefaults := defaultSet(node)
-	for _, key := range sortedKeys(edges) {
+	for _, key := range slices.Sorted(maps.Keys(edges)) {
 		edge := edges[key]
 		if !edge.Includable && !inDefaults[key] {
 			continue
@@ -396,7 +396,7 @@ func inlineAux(out map[string]*IRNode, nodeNames map[string]include.Resource) (m
 	for round := 0; ; round++ {
 		changed := false
 		next := make(map[string]*IRNode, len(work))
-		for _, name := range sortedKeys(work) {
+		for _, name := range slices.Sorted(maps.Keys(work)) {
 			sub, ch := substituteAux(work[name], aux)
 			next[name] = sub
 			changed = changed || ch
@@ -446,7 +446,7 @@ func auxInCycle(aux map[string]*IRNode) []string {
 		edges[name] = inlinableRefTargets(n, aux)
 	}
 	var cyclic []string
-	for _, start := range sortedKeys(aux) {
+	for _, start := range slices.Sorted(maps.Keys(aux)) {
 		seen := map[string]bool{}
 		var stack []string
 		stack = append(stack, edges[start]...)
@@ -608,5 +608,5 @@ func isBareRef(n *IRNode) bool {
 
 // joinSorted renders a name set for an error message, deterministically.
 func joinSorted[V any](m map[string]V) string {
-	return strings.Join(sortedKeys(m), ", ")
+	return strings.Join(slices.Sorted(maps.Keys(m)), ", ")
 }

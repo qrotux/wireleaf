@@ -79,6 +79,15 @@ func filterGraph() (book, author, review *fRes) {
 	return book, author, review
 }
 
+// filterRoot returns the Author node of filterGraph() as the root of the
+// input-resolution tests: string "name", int "age", bool "active" (all
+// filterable) and the to-many filterable edge "works" to Book (string "title").
+func filterRoot(t *testing.T) Resource {
+	t.Helper()
+	_, author, _ := filterGraph()
+	return author
+}
+
 // nilTargetRoot is a hand-built root whose filterable edge resolves to a nil
 // Resource — graph.Compile never produces one, ResolveFilter must still refuse
 // it rather than walk into a nil node.
@@ -495,5 +504,17 @@ func TestResolveFilterDefaultSubqueries(t *testing.T) {
 	}
 	if e.Code != FILTER_TOO_EXPENSIVE || e.Path != "" {
 		t.Errorf("err = %+v, want FILTER_TOO_EXPENSIVE, Path \"\"", e)
+	}
+}
+
+func TestFilterOpsFor(t *testing.T) {
+	if got := FilterOpsFor(reflect.TypeOf("")); !reflect.DeepEqual(got, []FilterOp{OpEq, OpNe, OpIn, OpNin, OpLt, OpLte, OpGt, OpGte}) {
+		t.Errorf("string ops = %v", got)
+	}
+	if got := FilterOpsFor(reflect.TypeOf(true)); !reflect.DeepEqual(got, []FilterOp{OpEq, OpNe, OpIn, OpNin}) {
+		t.Errorf("bool ops = %v", got)
+	}
+	if got := FilterOpsFor(reflect.TypeOf([]int{})); got != nil {
+		t.Errorf("slice ops = %v, want nil", got)
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -96,15 +97,6 @@ var books = map[string]bookRow{
 var authors = map[string]authorRow{
 	"a1": {ID: "a1", Name: "J. R. R. Tolkien"},
 	"a2": {ID: "a2", Name: "Frank Herbert"},
-}
-
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func insertBook(body CreateBookBody) bookRow {
@@ -191,7 +183,7 @@ func fetchBooksByAuthor(_ *include.Ctx, parentIDs []string, q include.EdgeQuery)
 	out := make(map[string]graph.ParentRows[bookRow], len(parentIDs))
 	for _, pid := range parentIDs {
 		var rows []bookRow
-		for _, id := range sortedKeys(books) {
+		for _, id := range slices.Sorted(maps.Keys(books)) {
 			if bk := books[id]; bk.AuthorID == pid {
 				rows = append(rows, bk)
 			}
@@ -348,7 +340,7 @@ func authorCols(r authorRow) map[string]any {
 func listBooks(q string) include.ListFetcher {
 	return func(_ *include.Ctx, args include.QueryArgs) (include.ListPage, error) {
 		rows := make([]bookRow, 0, len(books))
-		for _, id := range sortedKeys(books) {
+		for _, id := range slices.Sorted(maps.Keys(books)) {
 			r := books[id]
 			if q != "" && !strings.Contains(strings.ToLower(r.Title), strings.ToLower(q)) {
 				continue
@@ -382,7 +374,7 @@ func listBooks(q string) include.ListFetcher {
 // author id of the previous page.
 func listAuthors(_ *include.Ctx, args include.QueryArgs) (include.ListPage, error) {
 	var rows []authorRow
-	for _, id := range sortedKeys(authors) {
+	for _, id := range slices.Sorted(maps.Keys(authors)) {
 		r := authors[id]
 		if args.Cursor != "" && id <= args.Cursor {
 			continue

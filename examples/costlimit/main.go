@@ -19,7 +19,8 @@ package main
 import (
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/qrotux/wireleaf/graph"
@@ -113,7 +114,7 @@ var (
 )
 
 func init() {
-	for _, aid := range sortedKeys(authors) {
+	for _, aid := range slices.Sorted(maps.Keys(authors)) {
 		for i := 1; i <= 10; i++ {
 			bid := fmt.Sprintf("%s-b%02d", aid, i)
 			books[bid] = bookRow{ID: bid, Title: fmt.Sprintf("Book %d", i), AuthorID: aid}
@@ -125,22 +126,13 @@ func init() {
 	}
 }
 
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 // byParent is the reverse-batch fetcher shape shared by both reverse edges.
 func byParent[R any](all map[string]R, parentOf func(R) string) func(*include.Ctx, []string, include.EdgeQuery) (map[string]graph.ParentRows[R], error) {
 	return func(_ *include.Ctx, parentIDs []string, q include.EdgeQuery) (map[string]graph.ParentRows[R], error) {
 		out := make(map[string]graph.ParentRows[R], len(parentIDs))
 		for _, pid := range parentIDs {
 			var rows []R
-			for _, id := range sortedKeys(all) {
+			for _, id := range slices.Sorted(maps.Keys(all)) {
 				if r := all[id]; parentOf(r) == pid {
 					rows = append(rows, r)
 				}
@@ -240,7 +232,7 @@ func listAuthors(g *graph.Graph, res include.Resource, bucket *costBucket, inclu
 	// This in-memory fetcher ignores q.Where; a SQL one renders it the way
 	// examples/filter does. What is measured here is the cost, not the rows.
 	fetch := func(_ *include.Ctx, q include.QueryArgs) ([]any, int, bool, error) {
-		ids := sortedKeys(authors)
+		ids := slices.Sorted(maps.Keys(authors))
 		docs := make([]any, 0, min(q.Limit, len(ids)))
 		for _, id := range ids[:min(q.Limit, len(ids))] {
 			docs = append(docs, authors[id])

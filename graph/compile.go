@@ -967,7 +967,7 @@ type wireField struct {
 // projection).
 func deriveShape(t reflect.Type) shape {
 	s := shape{verdicts: map[string]apidoc.Verdict{}}
-	st := derefType(t)
+	st := apidoc.DerefType(t)
 	if st == nil || st.Kind() != reflect.Struct {
 		s.errs = append(s.errs, fmt.Sprintf("wire type %s is not a struct", t))
 		return s
@@ -1044,13 +1044,6 @@ func deriveShape(t reflect.Type) shape {
 	return s
 }
 
-func derefType(t reflect.Type) reflect.Type {
-	for t != nil && t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	return t
-}
-
 // collectWireFields appends every serialized field of t (recursing through
 // flattened embeds) to out, tagging each with its embedding depth.
 func collectWireFields(t reflect.Type, depth int, inProgress map[reflect.Type]bool, out *[]wireField, errs *[]string) {
@@ -1064,7 +1057,7 @@ func collectWireFields(t reflect.Type, depth int, inProgress map[reflect.Type]bo
 		f := t.Field(i)
 		tag := f.Tag.Get("json")
 		tagName, _, _ := strings.Cut(tag, ",")
-		elem := derefType(f.Type)
+		elem := apidoc.DerefType(f.Type)
 		embedded := f.Anonymous && tagName == "" && tag != "-" &&
 			elem != nil && elem.Kind() == reflect.Struct
 
@@ -1158,7 +1151,7 @@ func parseColTag(f reflect.StructField) (c include.Column, ok bool, errs []strin
 		case strings.Contains(legacy, ","):
 			return c, false, []string{fmt.Sprintf("sortCol tag on field %s must not contain options (use col:%q)", f.Name, "name,sort,…")}
 		}
-		return include.Column{Col: legacy, Type: derefType(f.Type), Sortable: true}, true, nil
+		return include.Column{Col: legacy, Type: apidoc.DerefType(f.Type), Sortable: true}, true, nil
 	case !hasCol:
 		return c, false, nil
 	}
@@ -1166,7 +1159,7 @@ func parseColTag(f reflect.StructField) (c include.Column, ok bool, errs []strin
 	if name == "" {
 		return c, false, []string{fmt.Sprintf("%s tag on field %s has an empty column name", tag, f.Name)}
 	}
-	c = include.Column{Col: name, Type: derefType(f.Type)}
+	c = include.Column{Col: name, Type: apidoc.DerefType(f.Type)}
 	if hasOpts {
 		for _, o := range strings.Split(opts, ",") {
 			switch o {

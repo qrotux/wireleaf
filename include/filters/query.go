@@ -1,4 +1,4 @@
-// filter_query.go — the bracket query-string grammar:
+// query.go — the bracket query-string grammar:
 //
 //	where[<path>][<op>]=<value>
 //	where[or][<i>][<path>][<op>]=<value>     where[and][<i>]…   (groups nest)
@@ -10,7 +10,7 @@
 // path is known; in/nin split on ",". Everything else is ResolveFilter's job:
 // this parser owns the SYNTAX, never a judgement about names.
 
-package include
+package filters
 
 import (
 	"net/url"
@@ -19,9 +19,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/qrotux/wireleaf/include"
+	"github.com/qrotux/wireleaf/include/internal/clip"
 )
 
 const whereKeyPrefix = "where["
+
+var timeType = reflect.TypeFor[time.Time]()
 
 type qEntry struct {
 	segs  []string
@@ -29,15 +34,15 @@ type qEntry struct {
 	key   string // the original query key, what a structural fault names
 }
 
-// ParseFilterQuery parses the where[...] keys of values into a Filter; nil when
-// there are none. Errors are *Error{INVALID_FILTER} whose Path carries the
-// offending client text in the conventions ResolveFilter uses — the path for a
-// condition fault, "<path>:<op>" for an operator fault, "<path>:<value>" for a
-// coercion fault, "<path>:<quant>" for a quantifier fault, and the whole
-// bracket key for a structural fault, where no path has been read yet — clipped
-// by clientEcho and never prose: an error path is machine-readable, and its
-// size is never the client's to choose.
-func ParseFilterQuery(root Resource, values url.Values) (Filter, error) {
+// ParseQuery parses the where[...] keys of values into an include.Filter; nil
+// when there are none. Errors are *include.Error{INVALID_FILTER} whose Path
+// carries the offending client text in the conventions include.ResolveFilter
+// uses — the path for a condition fault, "<path>:<op>" for an operator fault,
+// "<path>:<value>" for a coercion fault, "<path>:<quant>" for a quantifier
+// fault, and the whole bracket key for a structural fault, where no path has
+// been read yet — clipped by clip.Echo and never prose: an error path is
+// machine-readable, and its size is never the client's to choose.
+func ParseQuery(root include.Resource, values url.Values) (include.Filter, error) {
 	// Sorted keys make both the AST order and the FIRST fault reported
 	// deterministic; url.Values is a map, and map order is not.
 	keys := make([]string, 0, len(values))
@@ -51,15 +56,15 @@ func ParseFilterQuery(root Resource, values url.Values) (Filter, error) {
 	}
 	sort.Strings(keys)
 	// No root means no graph to walk for the quantifier sugar or the value's
-	// type: refuse rather than panic on the first Edges() call, as
-	// ParseFilterJSON does.
+	// type: refuse rather than panic on the first Edges() call, as ParseJSON
+	// does.
 	if root == nil {
-		return nil, NewError(INVALID_FILTER, "")
+		return nil, include.NewError(include.INVALID_FILTER, "")
 	}
 	entries := make([]qEntry, 0, len(keys))
 	for _, k := range keys {
 		if len(values[k]) != 1 {
-			return nil, NewError(INVALID_FILTER, clientEcho(k))
+			return nil, include.NewError(include.INVALID_FILTER, clip.Echo(k))
 		}
 		segs, err := bracketSegments(k)
 		if err != nil {
@@ -76,13 +81,13 @@ func bracketSegments(key string) ([]string, error) {
 	var segs []string
 	for rest != "" {
 		if rest[0] != '[' {
-			return nil, NewError(INVALID_FILTER, clientEcho(key))
+			return nil, include.NewError(include.INVALID_FILTER, clip.Echo(key))
 		}
 		end := strings.IndexByte(rest, ']')
 		if end < 0 || end == 1 {
 			// An unclosed bracket and an empty one are both malformed, and the
 			// key is all there is to name either with.
-			return nil, NewError(INVALID_FILTER, clientEcho(key))
+			return nil, include.NewError(include.INVALID_FILTER, clip.Echo(key))
 		}
 		segs = append(segs, rest[1:end])
 		rest = rest[end+1:]
@@ -93,15 +98,15 @@ func bracketSegments(key string) ([]string, error) {
 // buildQueryLevel turns the entries of one nesting level into a Filter: the
 // groups (and then or, by numeric index) first, then the conditions in key
 // order, all AND-ed; a single member is returned bare.
-func buildQueryLevel(root Resource, entries []qEntry) (Filter, error) {
+func buildQueryLevel(root include.Resource, entries []qEntry) (include.Filter, error) {
 	groups := map[string]map[int][]qEntry{} // "and"/"or" → index → entries
-	var conds []Filter
+	var conds []include.Filter
 	for _, e := range entries {
 		switch {
 		case len(e.segs) >= 3 && (e.segs[0] == "and" || e.segs[0] == "or"):
 			idx, err := strconv.Atoi(e.segs[1])
 			if err != nil || idx < 0 {
-				return nil, NewError(INVALID_FILTER, clientEcho(e.key))
+				return nil, include.NewError(include.INVALID_FILTER, clip.Echo(e.key))
 			}
 			if groups[e.segs[0]] == nil {
 				groups[e.segs[0]] = map[int][]qEntry{}
@@ -116,10 +121,10 @@ func buildQueryLevel(root Resource, entries []qEntry) (Filter, error) {
 		default:
 			// Neither where[path][op] nor where[and|or][i]…: one bracket too
 			// few, one too many, or a group key without an index.
-			return nil, NewError(INVALID_FILTER, clientEcho(e.key))
+			return nil, include.NewError(include.INVALID_FILTER, clip.Echo(e.key))
 		}
 	}
-	var members []Filter
+	var members []include.Filter
 	for _, label := range []string{"and", "or"} {
 		byIdx := groups[label]
 		if byIdx == nil {
@@ -130,7 +135,7 @@ func buildQueryLevel(root Resource, entries []qEntry) (Filter, error) {
 			idxs = append(idxs, i)
 		}
 		sort.Ints(idxs)
-		parts := make([]Filter, 0, len(idxs))
+		parts := make([]include.Filter, 0, len(idxs))
 		for _, i := range idxs {
 			sub, err := buildQueryLevel(root, byIdx[i])
 			if err != nil {
@@ -139,26 +144,26 @@ func buildQueryLevel(root Resource, entries []qEntry) (Filter, error) {
 			parts = append(parts, sub)
 		}
 		if label == "and" {
-			members = append(members, FilterAnd(parts))
+			members = append(members, include.FilterAnd(parts))
 		} else {
-			members = append(members, FilterOr(parts))
+			members = append(members, include.FilterOr(parts))
 		}
 	}
 	members = append(members, conds...)
 	if len(members) == 1 {
 		return members[0], nil
 	}
-	return FilterAnd(members), nil
+	return include.FilterAnd(members), nil
 }
 
 // queryCond builds one condition from a where[path][op] entry, typing the value
 // by the leaf column when the graph knows the path. A fault here has a path to
 // name, so it names THAT and not the bracket key around it — the convention
-// ParseFilterJSON follows, so one error shape covers both syntaxes.
-func queryCond(root Resource, e qEntry) (Filter, error) {
-	op, ok := filterOpByName[e.segs[1]]
+// ParseJSON follows, so one error shape covers both syntaxes.
+func queryCond(root include.Resource, e qEntry) (include.Filter, error) {
+	op, ok := opByName[e.segs[1]]
 	if !ok {
-		return nil, NewError(INVALID_FILTER, clientEcho(e.segs[0])+":"+clientEcho(e.segs[1]))
+		return nil, include.NewError(include.INVALID_FILTER, clip.Echo(e.segs[0])+":"+clip.Echo(e.segs[1]))
 	}
 	steps, field, err := filterPath(root, e.segs[0])
 	if err != nil {
@@ -168,18 +173,18 @@ func queryCond(root Resource, e qEntry) (Filter, error) {
 	// name is ResolveFilter's to reject, not the parser's.
 	var colType reflect.Type
 	if target, _, known := walkFilterPath(root, steps); known {
-		if c, ok := ColumnsOf(target)[field]; ok {
+		if c, ok := include.ColumnsOf(target)[field]; ok {
 			colType = c.Type
 		}
 	}
 	var value any
-	if op == OpIn || op == OpNin {
+	if op == include.OpIn || op == include.OpNin {
 		parts := strings.Split(e.value, ",")
 		list := make([]any, 0, len(parts))
 		for _, p := range parts {
 			v, err := coerceQueryValue(p, colType)
 			if err != nil {
-				return nil, NewError(INVALID_FILTER, clientEcho(e.segs[0])+":"+clientEcho(p))
+				return nil, include.NewError(include.INVALID_FILTER, clip.Echo(e.segs[0])+":"+clip.Echo(p))
 			}
 			list = append(list, v)
 		}
@@ -187,11 +192,11 @@ func queryCond(root Resource, e qEntry) (Filter, error) {
 	} else {
 		v, err := coerceQueryValue(e.value, colType)
 		if err != nil {
-			return nil, NewError(INVALID_FILTER, clientEcho(e.segs[0])+":"+clientEcho(e.value))
+			return nil, include.NewError(include.INVALID_FILTER, clip.Echo(e.segs[0])+":"+clip.Echo(e.value))
 		}
 		value = v
 	}
-	return FilterCond{Path: steps, Field: field, Op: op, Value: value}, nil
+	return include.FilterCond{Path: steps, Field: field, Op: op, Value: value}, nil
 }
 
 // coerceQueryValue converts one URL string by the column's Go type; a nil or
@@ -201,7 +206,7 @@ func coerceQueryValue(s string, t reflect.Type) (any, error) {
 	if t == nil {
 		return s, nil
 	}
-	if t == filterTimeType {
+	if t == timeType {
 		return time.Parse(time.RFC3339, s)
 	}
 	switch t.Kind() {

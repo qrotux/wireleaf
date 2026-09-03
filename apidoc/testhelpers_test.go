@@ -4,7 +4,9 @@ package apidoc
 // elsewhere in the package (redeclaration is a compile error).
 
 import (
+	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -327,7 +329,7 @@ func contains(hay []string, needle string) bool {
 	return false
 }
 
-func keysOf[V any](m map[string]V) []string { return sortedKeys(m) }
+func keysOf[V any](m map[string]V) []string { return slices.Sorted(maps.Keys(m)) }
 
 // envelopeOf is the enveloped-to-many shape as a generic fragment, including
 // the OPTIONAL nextCursor.

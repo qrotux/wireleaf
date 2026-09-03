@@ -11,6 +11,8 @@ package apidoc
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -151,7 +153,7 @@ func fragmentToIRMode(m map[string]any, strict bool) (*IRNode, error) {
 	}
 	// One unmodelled key makes the WHOLE fragment opaque: a partial parse would
 	// silently drop the keyword the caller reached for RawFragment to keep.
-	for _, k := range sortedKeys(m) {
+	for _, k := range slices.Sorted(maps.Keys(m)) {
 		if strings.HasPrefix(k, "x-") || standardKeywords[k] {
 			continue
 		}
@@ -263,7 +265,7 @@ func fragmentToIRMode(m map[string]any, strict bool) (*IRNode, error) {
 	// it did not claim would vanish. {"$ref":…,"properties":…} is not a ref, and
 	// {"anyOf":…,"type":…} is not a plain anyOf.
 	var leftover []string
-	for _, k := range sortedKeys(m) {
+	for _, k := range slices.Sorted(maps.Keys(m)) {
 		if kindKeywords[k] && !consumed[k] {
 			leftover = append(leftover, k)
 		}
@@ -360,7 +362,7 @@ func fragProps(m map[string]any, strict bool) ([]Prop, error) {
 		return nil, fmt.Errorf(`apidoc: fragment "properties" must be a map[string]any, got %T`, raw)
 	}
 	props := make([]Prop, 0, len(pm))
-	for _, k := range sortedKeys(pm) {
+	for _, k := range slices.Sorted(maps.Keys(pm)) {
 		child, err := fragChild(pm[k], strict)
 		if err != nil {
 			return nil, fmt.Errorf("apidoc: property %q: %w", k, err)
@@ -392,7 +394,7 @@ func fragApplyRequired(n *IRNode, raw any) error {
 		}
 	}
 	if len(want) > 0 {
-		return fmt.Errorf("apidoc: required names unknown property %q", sortedKeys(want)[0])
+		return fmt.Errorf("apidoc: required names unknown property %q", slices.Sorted(maps.Keys(want))[0])
 	}
 	return nil
 }
@@ -468,7 +470,7 @@ func fragAdditionalProperties(v any, strict bool) (any, error) {
 // applyFragmentKeywords copies every non-structural keyword into its typed
 // field, and "x-" keys into Extensions.
 func applyFragmentKeywords(n *IRNode, m map[string]any) error {
-	for _, k := range sortedKeys(m) {
+	for _, k := range slices.Sorted(maps.Keys(m)) {
 		if structuralKeywords[k] {
 			continue
 		}

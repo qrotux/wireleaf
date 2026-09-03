@@ -14,7 +14,9 @@ package apidoc
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 )
 
 // Components is a registry of named doc component fragments plus the two type
@@ -290,7 +292,7 @@ func validateComponent(name string, n *IRNode) error {
 // construction time from Opaque nodes' raw bytes and from Extensions values.
 func (c *Components) Verify() error {
 	missing := map[string]bool{}
-	for _, name := range sortedKeys(c.entries) {
+	for _, name := range slices.Sorted(maps.Keys(c.entries)) {
 		for _, r := range refsOf(c.entries[name]) {
 			if c.entries[r] == nil && !c.external[r] {
 				missing[name+" -> "+r] = true
@@ -347,7 +349,7 @@ func refsOf(n *IRNode) []string {
 // Merge exists for BuildInto compatibility; assembly that can consume IR
 // directly should do so.
 func (c *Components) Merge(dst map[string]any) error {
-	names := sortedKeys(c.entries)
+	names := slices.Sorted(maps.Keys(c.entries))
 	for _, name := range names {
 		if _, clash := dst[name]; clash {
 			return fmt.Errorf("apidoc: component %q collides with a pre-existing schema; refusing to clobber", name)

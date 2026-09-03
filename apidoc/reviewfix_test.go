@@ -5,6 +5,8 @@ package apidoc
 // EmitComponent fails loudly on surviving auxiliaries.
 
 import (
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -150,7 +152,7 @@ func TestEmitComponentsReachesDefaultTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, ok := comps["Image"]; !ok {
-		t.Fatalf("Image (target of a non-includable default) must be emitted; have %v", sortedKeys(comps))
+		t.Fatalf("Image (target of a non-includable default) must be emitted; have %v", slices.Sorted(maps.Keys(comps)))
 	}
 	av := irProp(t, comps["Author"].IR(), "avatar")
 	if av.Required {

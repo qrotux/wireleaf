@@ -8,7 +8,9 @@
 package apidoc
 
 import (
+	"maps"
 	"reflect"
+	"slices"
 
 	"github.com/qrotux/wireleaf/include"
 )
@@ -49,7 +51,7 @@ func InputParams(res include.Resource, limits include.Limits, syntax FilterSynta
 		Schema:      IncludeParamSchema(IncludePaths(res, limits)),
 	}}
 	if in.Sort.Enabled {
-		keys := sortedKeys(in.Sort.Keys)
+		keys := slices.Sorted(maps.Keys(in.Sort.Keys))
 		enum := make([]any, 0, 2*len(keys))
 		for _, k := range keys {
 			enum = append(enum, k, "-"+k)
@@ -79,7 +81,7 @@ func InputParams(res include.Resource, limits include.Limits, syntax FilterSynta
 func whereParam(f include.FilterInputs, syntax FilterSyntax) InputParam {
 	fields := map[string]any{}
 	props := map[string]any{}
-	for _, name := range sortedKeys(f.Fields) {
+	for _, name := range slices.Sorted(maps.Keys(f.Fields)) {
 		col := f.Fields[name]
 		ops := include.FilterOpsFor(col.Type)
 		names := make([]any, 0, len(ops))

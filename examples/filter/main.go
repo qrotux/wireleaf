@@ -2,13 +2,13 @@
 //
 // `include` carries the filter MODEL — a sealed AST (FilterAnd / FilterOr /
 // FilterCond), ResolveFilter, which checks it against the compiled graph, and
-// ParseFilterJSON, one ready-made JSON syntax for it — but no SQL and no
-// request shape. Those belong to the application, and this file is the
+// include/filters.ParseJSON, one ready-made JSON syntax for it — but no SQL
+// and no request shape. Those belong to the application, and this file is the
 // reference for them: parseWhere unwraps the request envelope and hands the
-// `where` node to include.ParseFilterJSON, and render turns the
-// ResolvedFilter that comes back into SQL text. An application that wants a
-// different syntax writes its own parser against the same AST; this one takes
-// what the library ships.
+// `where` node to filters.ParseJSON, and render turns the ResolvedFilter that
+// comes back into SQL text. An application that wants a different syntax
+// writes its own parser against the same AST; this one takes what the library
+// ships.
 //
 // It PRINTS the SQL instead of executing it, so the three EXISTS templates of
 // docs/include.md — any / all / none — and the deny-by-default rules are
@@ -21,12 +21,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/qrotux/wireleaf/graph"
 	"github.com/qrotux/wireleaf/include"
+	"github.com/qrotux/wireleaf/include/filters"
 )
 
 // ------------------------------------------------------------------ the graph
@@ -115,8 +117,8 @@ func buildGraph() (*graph.Graph, include.Resource) {
 
 // ------------------------------------------------------------------ the parser
 
-// The JSON `where` grammar now lives in the library as
-// include.ParseFilterJSON — one key per object, `and`/`or` arrays, and
+// The JSON `where` grammar lives in the library as filters.ParseJSON — one
+// key per object, `and`/`or` arrays, and
 // `{"<dotted.path>": {"<op>": <value>}}` with the quantifier suffixes
 // docs/include.md recommends (none = any, `*` = all, `~` = none). What stays
 // here is what an application really owns: the request ENVELOPE around the
@@ -132,16 +134,7 @@ func parseWhere(root include.Resource, body []byte) (include.Filter, error) {
 	if !ok {
 		return nil, errors.New(`body has no "where" key`)
 	}
-	return include.ParseFilterJSON(root, raw)
-}
-
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return filters.ParseJSON(root, raw)
 }
 
 // ------------------------------------------------------------------ the bindings
@@ -183,13 +176,13 @@ func checkBindings(g *graph.Graph) error {
 			problems = append(problems, "no table bound for node "+res.Name())
 		}
 		cols := include.ColumnsOf(res)
-		for _, k := range sortedKeys(cols) {
+		for _, k := range slices.Sorted(maps.Keys(cols)) {
 			if cols[k].Filterable && cols[k].Col == "" {
 				problems = append(problems, "no column bound for "+res.Name()+"."+k)
 			}
 		}
 		edges := res.Edges()
-		for _, k := range sortedKeys(edges) {
+		for _, k := range slices.Sorted(maps.Keys(edges)) {
 			e := edges[k]
 			if !e.Filterable || e.Target == nil {
 				continue

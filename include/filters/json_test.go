@@ -1,4 +1,4 @@
-package include
+package filters_test
 
 import (
 	"errors"
@@ -6,38 +6,32 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/qrotux/wireleaf/include"
+	"github.com/qrotux/wireleaf/include/filters"
 )
 
-// filterRoot returns the Author node of filterGraph() as the root of the
-// parser tests: string "name", int "age", bool "active" (all filterable) and
-// the to-many filterable edge "works" to Book (string "title").
-func filterRoot(t *testing.T) Resource {
-	t.Helper()
-	_, author, _ := filterGraph()
-	return author
-}
-
-func TestParseFilterJSONGrammar(t *testing.T) {
+func TestParseJSONGrammar(t *testing.T) {
 	root := filterRoot(t)
 	cases := map[string]struct {
 		in   string
-		want Filter
+		want include.Filter
 	}{
-		"cond":                {`{"name":{"eq":"x"}}`, FilterCond{Field: "name", Op: OpEq, Value: "x"}},
-		"and":                 {`{"and":[{"name":{"eq":"x"}},{"age":{"gt":3}}]}`, FilterAnd{FilterCond{Field: "name", Op: OpEq, Value: "x"}, FilterCond{Field: "age", Op: OpGt, Value: float64(3)}}},
-		"or":                  {`{"or":[{"name":{"eq":"x"}}]}`, FilterOr{FilterCond{Field: "name", Op: OpEq, Value: "x"}}},
-		"hop default any":     {`{"works.title":{"eq":"x"}}`, FilterCond{Path: []FilterStep{{Key: "works", Quant: QuantAny}}, Field: "title", Op: OpEq, Value: "x"}},
-		"hop all on segment":  {`{"works*.title":{"eq":"x"}}`, FilterCond{Path: []FilterStep{{Key: "works", Quant: QuantAll}}, Field: "title", Op: OpEq, Value: "x"}},
-		"hop none on field":   {`{"works.title~":{"eq":"x"}}`, FilterCond{Path: []FilterStep{{Key: "works", Quant: QuantNone}}, Field: "title", Op: OpEq, Value: "x"}},
-		"to-one hop no quant": {`{"self.name":{"eq":"x"}}`, FilterCond{Path: []FilterStep{{Key: "self"}}, Field: "name", Op: OpEq, Value: "x"}},
+		"cond":                {`{"name":{"eq":"x"}}`, include.FilterCond{Field: "name", Op: include.OpEq, Value: "x"}},
+		"and":                 {`{"and":[{"name":{"eq":"x"}},{"age":{"gt":3}}]}`, include.FilterAnd{include.FilterCond{Field: "name", Op: include.OpEq, Value: "x"}, include.FilterCond{Field: "age", Op: include.OpGt, Value: float64(3)}}},
+		"or":                  {`{"or":[{"name":{"eq":"x"}}]}`, include.FilterOr{include.FilterCond{Field: "name", Op: include.OpEq, Value: "x"}}},
+		"hop default any":     {`{"works.title":{"eq":"x"}}`, include.FilterCond{Path: []include.FilterStep{{Key: "works", Quant: include.QuantAny}}, Field: "title", Op: include.OpEq, Value: "x"}},
+		"hop all on segment":  {`{"works*.title":{"eq":"x"}}`, include.FilterCond{Path: []include.FilterStep{{Key: "works", Quant: include.QuantAll}}, Field: "title", Op: include.OpEq, Value: "x"}},
+		"hop none on field":   {`{"works.title~":{"eq":"x"}}`, include.FilterCond{Path: []include.FilterStep{{Key: "works", Quant: include.QuantNone}}, Field: "title", Op: include.OpEq, Value: "x"}},
+		"to-one hop no quant": {`{"self.name":{"eq":"x"}}`, include.FilterCond{Path: []include.FilterStep{{Key: "self"}}, Field: "name", Op: include.OpEq, Value: "x"}},
 		// An unknown edge key is NOT the parser's fault to report: the path
 		// passes through quantifier-free for ResolveFilter to reject with a
 		// bounded path.
-		"unknown edge passes through": {`{"ghost.title":{"eq":"x"}}`, FilterCond{Path: []FilterStep{{Key: "ghost"}}, Field: "title", Op: OpEq, Value: "x"}},
+		"unknown edge passes through": {`{"ghost.title":{"eq":"x"}}`, include.FilterCond{Path: []include.FilterStep{{Key: "ghost"}}, Field: "title", Op: include.OpEq, Value: "x"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := ParseFilterJSON(root, []byte(tc.in))
+			got, err := filters.ParseJSON(root, []byte(tc.in))
 			if err != nil {
 				t.Fatalf("err = %v", err)
 			}
@@ -48,7 +42,7 @@ func TestParseFilterJSONGrammar(t *testing.T) {
 	}
 }
 
-func TestParseFilterJSONErrors(t *testing.T) {
+func TestParseJSONErrors(t *testing.T) {
 	root := filterRoot(t)
 	for name, in := range map[string]string{
 		"not object":                    `[1]`,
@@ -64,19 +58,19 @@ func TestParseFilterJSONErrors(t *testing.T) {
 		"quant given twice":             `{"works*.title~":{"eq":1}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := ParseFilterJSON(root, []byte(in))
-			var ie *Error
-			if !errors.As(err, &ie) || ie.Code != INVALID_FILTER || ie.Status != 400 {
+			_, err := filters.ParseJSON(root, []byte(in))
+			var ie *include.Error
+			if !errors.As(err, &ie) || ie.Code != include.INVALID_FILTER || ie.Status != 400 {
 				t.Fatalf("err = %v, want *Error INVALID_FILTER 400", err)
 			}
 		})
 	}
 }
 
-// TestParseFilterJSONErrorPaths pins Error.Path to the conventions
-// INVALID_FILTER documents — the key, "<key>:<op>", "<path>:<quant>", or ""
-// for a structural fault with no key — and never an English sentence.
-func TestParseFilterJSONErrorPaths(t *testing.T) {
+// TestParseJSONErrorPaths pins Error.Path to the conventions INVALID_FILTER
+// documents — the key, "<key>:<op>", "<path>:<quant>", or "" for a structural
+// fault with no key — and never an English sentence.
+func TestParseJSONErrorPaths(t *testing.T) {
 	root := filterRoot(t)
 	for name, tc := range map[string]struct{ in, want string }{
 		"not object":                    {`[1]`, ""},
@@ -91,8 +85,8 @@ func TestParseFilterJSONErrorPaths(t *testing.T) {
 		"quant given twice":             {`{"works*.title~":{"eq":1}}`, "works*.title~:none"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := ParseFilterJSON(root, []byte(tc.in))
-			var ie *Error
+			_, err := filters.ParseJSON(root, []byte(tc.in))
+			var ie *include.Error
 			if !errors.As(err, &ie) {
 				t.Fatalf("err = %v, want *Error", err)
 			}
@@ -103,9 +97,9 @@ func TestParseFilterJSONErrorPaths(t *testing.T) {
 	}
 }
 
-// TestParseFilterJSONErrorPathBounded: every echoed path is raw client text, so
+// TestParseJSONErrorPathBounded: every echoed path is raw client text, so
 // neither one long key nor a thousand keys may size the 400 body.
-func TestParseFilterJSONErrorPathBounded(t *testing.T) {
+func TestParseJSONErrorPathBounded(t *testing.T) {
 	root := filterRoot(t)
 	long := strings.Repeat("z", 200)
 	keys := make([]string, 0, 50)
@@ -117,8 +111,8 @@ func TestParseFilterJSONErrorPathBounded(t *testing.T) {
 		"many keys": `{` + strings.Join(keys, ",") + `}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := ParseFilterJSON(root, []byte(in))
-			var ie *Error
+			_, err := filters.ParseJSON(root, []byte(in))
+			var ie *include.Error
 			if !errors.As(err, &ie) {
 				t.Fatalf("err = %v, want *Error", err)
 			}
@@ -129,24 +123,12 @@ func TestParseFilterJSONErrorPathBounded(t *testing.T) {
 	}
 }
 
-// TestParseFilterJSONNilRoot: without a root there is no graph to resolve the
+// TestParseJSONNilRoot: without a root there is no graph to resolve the
 // field-suffix sugar against, the same refusal ResolveFilter makes.
-func TestParseFilterJSONNilRoot(t *testing.T) {
-	_, err := ParseFilterJSON(nil, []byte(`{"name":{"eq":"x"}}`))
-	var ie *Error
-	if !errors.As(err, &ie) || ie.Code != INVALID_FILTER || ie.Path != "" || ie.Status != 400 {
+func TestParseJSONNilRoot(t *testing.T) {
+	_, err := filters.ParseJSON(nil, []byte(`{"name":{"eq":"x"}}`))
+	var ie *include.Error
+	if !errors.As(err, &ie) || ie.Code != include.INVALID_FILTER || ie.Path != "" || ie.Status != 400 {
 		t.Fatalf("err = %v, want *Error INVALID_FILTER with empty path", err)
-	}
-}
-
-func TestFilterOpsFor(t *testing.T) {
-	if got := FilterOpsFor(reflect.TypeOf("")); !reflect.DeepEqual(got, []FilterOp{OpEq, OpNe, OpIn, OpNin, OpLt, OpLte, OpGt, OpGte}) {
-		t.Errorf("string ops = %v", got)
-	}
-	if got := FilterOpsFor(reflect.TypeOf(true)); !reflect.DeepEqual(got, []FilterOp{OpEq, OpNe, OpIn, OpNin}) {
-		t.Errorf("bool ops = %v", got)
-	}
-	if got := FilterOpsFor(reflect.TypeOf([]int{})); got != nil {
-		t.Errorf("slice ops = %v, want nil", got)
 	}
 }

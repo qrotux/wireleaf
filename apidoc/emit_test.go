@@ -9,7 +9,9 @@ package apidoc
 
 import (
 	"encoding/json"
+	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -396,7 +398,7 @@ func TestEmitAuxAcyclicFeederIntoCycleStillInlines(t *testing.T) {
 func assertComponentsVerify(t *testing.T, out map[string]Schema) {
 	t.Helper()
 	c := NewComponents()
-	for _, name := range sortedKeys(out) {
+	for _, name := range slices.Sorted(maps.Keys(out)) {
 		c.Add(name, out[name])
 	}
 	if err := c.Verify(); err != nil {

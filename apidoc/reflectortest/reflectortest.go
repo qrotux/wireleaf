@@ -720,7 +720,7 @@ func checkCanonical(got map[string]*apidoc.IRNode) []string {
 	var v []string
 	for _, name := range componentList(got) {
 		walk(got[name], name, func(n *apidoc.IRNode, path string) {
-			for _, k := range sortedKeys(n.Extensions) {
+			for _, k := range slices.Sorted(maps.Keys(n.Extensions)) {
 				if legacyExtensionKeys[k] {
 					v = append(v, fmt.Sprintf("canonical IR: %s carries the draft-07 keyword %q in Extensions — OAS 3.1 expresses nullability as the null TYPE ({\"type\":[\"T\",\"null\"]}) or anyOf[$ref,{\"type\":\"null\"}]", path, k))
 				}
@@ -986,10 +986,6 @@ func jsonName(f reflect.StructField) string {
 		return f.Name
 	}
 	return name
-}
-
-func sortedKeys(m map[string]any) []string {
-	return slices.Sorted(maps.Keys(m))
 }
 
 // ------------------------------------------------------------------ reporting

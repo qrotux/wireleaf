@@ -7,7 +7,8 @@ package main
 // nodes are declared once, in both directions, in graph_to_many.go.
 
 import (
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/qrotux/wireleaf/graph"
 	"github.com/qrotux/wireleaf/include"
@@ -125,7 +126,7 @@ func booksWhere(parentIDs []string, q include.EdgeQuery, belongs func(bk bookRow
 	out := make(map[string]graph.ParentRows[bookRow], len(parentIDs))
 	for _, pid := range parentIDs {
 		var rows []bookRow
-		for _, id := range sortedKeys(books) {
+		for _, id := range slices.Sorted(maps.Keys(books)) {
 			if bk := books[id]; belongs(bk, pid) {
 				rows = append(rows, bk)
 			}
@@ -172,13 +173,4 @@ func fetchTags(_ *include.Ctx, ids []string) ([]tagRow, error) {
 		}
 	}
 	return out, nil
-}
-
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

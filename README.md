@@ -362,7 +362,7 @@ next. Other pieces: `wfhuma.RegisterNode[W]` for a `Node[W]` body wrapper,
 
 | Module | Path | Depends on | What it holds |
 | --- | --- | --- | --- |
-| core | `.` | **nothing** | `include` (the engine), `graph` (the typed builder, `Compile`, `Loader`), `apidoc` (the doc core and IR), `jsonsplice`, plus the `graph/loadertest` and `apidoc/reflectortest` harnesses. |
+| core | `.` | **nothing** | `include` (the engine) and `include/filters` (the two shipped filter syntaxes), `graph` (the typed builder, `Compile`), `loader` (the request-scoped batch loader), `apidoc` (the doc core and IR), `jsonsplice`, plus the `graph/loadertest` and `apidoc/reflectortest` harnesses. |
 | reflector | `reflector` | `jsonschema-go` | `*reflector.Reflector` — the canonical `apidoc.Reflector`: Go struct → wireleaf IR, with the nullability policy, naming, and constraint mapping the whole stack agrees on. |
 | crosscheck | `apidoc/crosscheck` | `santhosh-tekuri/jsonschema/v6` | Test-only: compiles an emitted component set with a real draft-2020-12 validator and validates instances against it. |
 | huma adapter | `adapters/huma` | huma, reflector | The `API` facade (`New`, `Attach`, `Bind` → `Bound[W]` with `Get`/`Hydrate`/`List`/`ListQuery`/`Page[W]`, `Register`), `NewConfig` / `WithRegistry`, the `Registry` bridge, `Op` and its decorators, the envelope and `Node[W]` types, `BuildInto`. |
@@ -393,18 +393,18 @@ parent with no children is an absent key or empty rows, never an error. Be safe
 for concurrent use. `graph.PerParent` adapts a one-parent-at-a-time closure to
 the batch signature.
 
-**`graph.Loader[K, V]`** is the request-scoped batch loader for side data that
+**`loader.Loader[K, V]`** is the request-scoped batch loader for side data that
 is not part of the graph (permissions, counters, flags). Two phases: `Warm`
 fetches — batching every still-unknown key into one call and single-flighting
 concurrent warms — and `Get` reads, never fetching. Cached values live on the
 `*include.Ctx` of one request and die with it.
 
-Build one with **`graph.NewLoader`** — a hand-assembled `Loader{}` has a nil
+Build one with **`loader.New`** — a hand-assembled `Loader{}` has a nil
 fetch and every `Warm` fails loudly rather than negative-caching every key. The
 loader is a package-level value; it holds no data of its own.
 
 ```go
-var perms = graph.NewLoader(func(c *include.Ctx, ids []string) (map[string]Perm, error) { … })
+var perms = loader.New(func(c *include.Ctx, ids []string) (map[string]Perm, error) { … })
 
 // in a MapFn / EnrichFn:
 if err := perms.Warm(c, ids...); err != nil { … }
@@ -508,9 +508,10 @@ traversed — to-one as a join, reverse / to-many with a quantifier per hop
 (`any`, `all`, `none`) that the adapter renders as `EXISTS` / `NOT EXISTS`
 (deny-by-default, independent of `Includable()`, never with `Guard()`).
 
-`include.ParseFilterJSON` reads a JSON `where` node and
-`include.ParseFilterQuery` the `?where[field][op]=` bracket query string; both
-produce an `include.Filter` tree over client-side names. `include.ResolveFilter`
+`filters.ParseJSON` reads a JSON `where` node and `filters.ParseQuery` the
+`?where[field][op]=` bracket query string — the `include/filters` subpackage,
+where syntax lives apart from judgement; both produce an `include.Filter` tree
+over client-side names. `include.ResolveFilter`
 then checks that tree against the compiled graph and returns SQL-side names
 only — so the parsers never decide what is filterable, and a hand-written
 parser can still feed `ResolveFilter` the same tree.
@@ -522,7 +523,7 @@ adapter's job; the resolved filter reaches its root fetcher through
 `include.QueryArgs.Where`.
 [`examples/filter/main.go`](examples/filter/main.go) is the reference for the
 piece an application owns — a SQL renderer over `ResolveFilter`, fed by
-`ParseFilterJSON` — and [`examples/costlimit`](examples/costlimit/main.go)
+`filters.ParseJSON` — and [`examples/costlimit`](examples/costlimit/main.go)
 shows `include.FilterSubqueries` in a cost bucket.
 See [`docs/include.md` → Filters](docs/include.md#filters).
 

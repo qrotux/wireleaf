@@ -29,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/qrotux/wireleaf/include/internal/clip"
 )
 
 // ------------------------------------------------------------------ AST
@@ -380,11 +382,8 @@ func quantKnown(q Quant) bool {
 	return q == QuantAny || q == QuantAll || q == QuantNone
 }
 
-// clientEchoMax bounds any client string echoed in an INVALID_FILTER path.
-const clientEchoMax = 16
-
-// clientEcho renders client text for an error path, at most clientEchoMax
-// bytes followed by "…". It applies to every string that reaches an error path
+// clientEcho renders client text for an error path, at most clip.Max bytes
+// followed by "…". It applies to every string that reaches an error path
 // BECAUSE it was not found in the graph — an unknown edge key, an unknown
 // field, an unknown operator, an unknown quantifier: those are raw client text
 // of unbounded length, and echoing them whole would let a client choose the
@@ -392,19 +391,7 @@ const clientEchoMax = 16
 // found are bounded by the graph and are echoed whole. The cut lands on a rune
 // boundary; the known spellings are far below the bound and pass through
 // unchanged.
-func clientEcho(s string) string {
-	if len(s) <= clientEchoMax {
-		return s
-	}
-	end := 0
-	for i := range s { // i is the byte offset of each rune
-		if i > clientEchoMax {
-			break
-		}
-		end = i
-	}
-	return s[:end] + "…"
-}
+func clientEcho(s string) string { return clip.Echo(s) }
 
 // stepKeys projects a path onto its edge keys. Quantifiers never appear in an
 // error path except where they ARE the fault ("author:any").
@@ -498,4 +485,22 @@ func opAllowed(op FilterOp, t reflect.Type) bool {
 		return orderedKinds[t.Kind()] || t == filterTimeType
 	}
 	return false
+}
+
+// filterOpNames is the client spelling of every operator, in FilterOpsFor order.
+var filterOpNames = []FilterOp{OpEq, OpNe, OpIn, OpNin, OpLt, OpLte, OpGt, OpGte}
+
+// FilterOpsFor lists the operators a column of type t admits, in a fixed
+// order (eq ne in nin lt lte gt gte); nil for a type outside FilterableType.
+// It is opAllowed read forwards: the resolver asks "is this operator allowed
+// on this column", a documentation or input-schema caller asks "which
+// operators may a client name here", and both must answer from one matrix.
+func FilterOpsFor(t reflect.Type) []FilterOp {
+	var out []FilterOp
+	for _, op := range filterOpNames {
+		if opAllowed(op, t) {
+			out = append(out, op)
+		}
+	}
+	return out
 }

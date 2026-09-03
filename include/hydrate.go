@@ -121,7 +121,8 @@ func materializeOne(plan *PlanNode, doc any, ctx *Ctx) (json.RawMessage, error) 
 	return items[0], nil
 }
 
-// listFetcherOf adapts the offset-era RootFetcher to the ListFetcher shape.
+// listFetcherOf adapts a RootFetcher to the ListFetcher shape; it returns no
+// continuation tokens.
 func listFetcherOf(fetch RootFetcher) ListFetcher {
 	return func(ctx *Ctx, q QueryArgs) (ListPage, error) {
 		docs, total, hasMore, err := fetch(ctx, q)

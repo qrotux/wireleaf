@@ -347,8 +347,8 @@ share `include.Inputs`, but they are two mechanisms).
 
 | `WithFilterSyntax` | source | parser |
 | --- | --- | --- |
-| `apidoc.FilterJSON` (default) | `q.Where` (empty → no filter) | `include.ParseFilterJSON` |
-| `apidoc.FilterBracket` | `where[…]` keys of the request snapshot | `include.ParseFilterQuery` |
+| `apidoc.FilterJSON` (default) | `q.Where` (empty → no filter) | `filters.ParseJSON` |
+| `apidoc.FilterBracket` | `where[…]` keys of the request snapshot | `filters.ParseQuery` |
 
 In bracket mode the filter comes from the `where[…]` keys, and a call with no
 snapshot on the context fails with `adapters/huma: bracket filter needs Attach

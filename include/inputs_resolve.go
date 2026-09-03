@@ -13,8 +13,8 @@ import (
 
 // RawInputs is the client's list parameters as bound by the transport. Include
 // is NOT here: the include string is parsed by the Hydrator method that
-// consumes it. Where arrives already parsed (ParseFilterJSON or
-// ParseFilterQuery); nil means no filter.
+// consumes it. Where arrives already parsed (filters.ParseJSON or
+// filters.ParseQuery); nil means no filter.
 type RawInputs struct {
 	Sort   string
 	Page   int

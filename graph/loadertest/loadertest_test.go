@@ -493,7 +493,7 @@ func TestRunLoaderFetch_Good(t *testing.T) {
 // ------------------------------------------------------------------ shared Ctx
 
 // The concurrency smoke must contend on ONE Ctx, not one per goroutine: a
-// fetcher that writes request state through Ctx.LoaderState is the case that
+// fetcher that writes request state through Ctx.State is the case that
 // -race has to be able to see.
 func TestConcurrency_SharesOneCtx(t *testing.T) {
 	seen := make(map[*include.Ctx]struct{})
