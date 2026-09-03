@@ -12,7 +12,7 @@ component set, one reflector.
 
 ## Overview
 
-The bridge has five functional layers:
+The bridge has six functional layers:
 
 - **`Registry`** (registry.go) — implements `humav2.Registry` over a shared
   `*apidoc.Components` plus an `apidoc.Reflector`.
@@ -26,6 +26,9 @@ The bridge has five functional layers:
   as its Go field shape.
 - **`Node[W]`** (node.go) — the typed wire wrapper for engine-hydrated bytes;
   documents as `$ref` to W's component.
+- **`API`** (api.go, request.go) — the wiring object over graph + options +
+  components + the huma API, with the `Include`/`Inputs` operation decorators,
+  a guarded `Register`, and the middleware that fills `include.Request`.
 
 convert.go is the one IR → `humav2.Schema` converter every served schema goes
 through; build.go's `BuildInto` merges a component set into a huma document
@@ -129,6 +132,101 @@ Contracts and gotchas:
   request-validation hot path and caches conversions under a mutex.
 - Any reflection/registration failure **panics** — a half-built document is
   worse than a loud stop at startup.
+
+## API (api.go, request.go)
+
+Everything above is a free function over something the application assembles by
+hand. `API` is the one object that owns the decisions which must agree with each
+other: the compiled graph, the `include.Options` the planner enforces, the
+component set the document is written into, and the huma API the operations are
+registered on.
+
+```go
+func New(g *graph.Graph, opts include.Options, title, version string, o ...Option) *API
+func WithFilterSyntax(s apidoc.FilterSyntax) Option   // default apidoc.FilterJSON
+func WithConfig(c ...ConfigOpt) Option                // forwarded to NewConfig
+
+func (a *API) Config() humav2.Config                  // build the router adapter with this
+func (a *API) Components() *apidoc.Components
+func (a *API) Graph() *graph.Graph
+func (a *API) Options() include.Options
+func (a *API) Attach(h humav2.API)
+
+func (a *API) Include(res include.Resource) OpOpt
+func (a *API) Inputs(res include.Resource) OpOpt
+func (a *API) Errors(defs ...ErrorDef) OpOpt
+
+func Register[I, O any](a *API, op humav2.Operation,
+    handler func(context.Context, *I) (*O, error), opts ...OpOpt)
+```
+
+**Order: `New` → `Attach` → every `Bind` → `Register`.** Both steps are guarded,
+loudly:
+
+- `Register` before `Attach` panics with `adapters/huma: Register before
+  Attach` — there is no huma API to register on yet.
+- `Register` walks the output type `O` (through pointers, slices, arrays, maps
+  and struct fields) and panics on a `Node[W]` wrapper no `Bind` registered.
+  Without the guard the same wiring bug surfaces later, deep inside huma's
+  reflection, as `Node[W].Schema` failing to find W's component.
+
+`New` does the emission itself: `apidoc.EmitComponents(&reflector.Reflector{},
+g.Roots())` collects the reachable set from the roots and its fragments are
+added, in sorted order, to a fresh `apidoc.NewComponents()`; the config is
+`NewConfig(title, version, WithRegistry(c), extra…)`. A zero `opts` means
+`include.DefaultOptions`. Any emission failure is a wiring error and panics.
+
+### Include and Inputs
+
+`a.Include(res)` is `IncludeParamWithLimits(res, a.Options().Limits)` plus the
+`400 INVALID_INCLUDE` response — the API's own limits, so the enumerated
+`x-include-paths` cannot describe a deeper tree than the planner accepts.
+
+`a.Inputs(res)` appends one query parameter per `apidoc.InputParams(res,
+limits, syntax)` entry — `include`, `sort` (when enabled), `page` or `cursor`,
+`limit`, `where` (when enabled) — copying each fragment's schema plus `Style` /
+`Explode` (the bracket `where` is a `deepObject`). It is **idempotent**: a
+parameter of the same name already declared in the `query` location is left
+alone, since two same-named parameters in one location is an invalid OpenAPI
+document. It also declares the 400 codes the resolver can produce:
+`INVALID_INCLUDE` and `INVALID_PAGINATION` always, `INVALID_SORT` when sort is
+enabled, `INVALID_FILTER` when filter is enabled — merged into the single `400`
+response by `Errors`.
+
+> **`Inputs()` parameters are DOCUMENTATION ONLY.** huma validates a query
+> parameter against the tags of the *input struct's own field* and nothing
+> else, so a parameter that exists only in `Operation.Parameters` is never
+> checked by huma. The enforcement is `Bound.List` → `include.ResolveInputs`,
+> which reads the same `include.Inputs` this documents — so the two cannot
+> drift, but they are two different mechanisms, and the 400s come from the
+> resolver, not from huma's validator.
+
+### The request middleware (request.go)
+
+`Attach` installs one `UseMiddleware` middleware. huma runs middlewares *after*
+routing, so `ctx.Operation()` and `ctx.Param()` are already known; it snapshots
+the request once into an `*include.Request` and stores it on the Go context
+under a package-private key:
+
+| field | source |
+| --- | --- |
+| `Method` | `ctx.Method()` |
+| `Path` | `ctx.URL().Path` — as requested |
+| `Route` | `ctx.Operation().Path` — the matched template |
+| `OperationID` | `ctx.Operation().OperationID` |
+| `PathParams` | `ctx.Param(name)` for every `{name}` of the template |
+| `Query` | `ctx.URL().Query()` |
+| `Header` | every header, via `ctx.EachHeader` (canonical keys) |
+| `RemoteAddr` | `ctx.RemoteAddr()` |
+
+The binding layer reads it back and hangs it off `include.Ctx.Request`, where
+`Ctx.Header` / `Ctx.PathParam` / `Ctx.QueryValue` reach it from Wire functions,
+guards, enrich hooks and fetchers. It is **raw, untrusted client input** — a
+header is whatever the client or the edge proxy sent; interpreted per-request
+state (the authenticated viewer, the tenant) belongs in `Ctx.Env`. The context
+key is private, so nothing outside this package can substitute a forged
+snapshot; outside HTTP (tests, workers) there is simply no snapshot and the
+`Ctx` accessors tolerate `nil`.
 
 ## Operation layer (op.go)
 
