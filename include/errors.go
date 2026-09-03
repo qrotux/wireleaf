@@ -64,8 +64,18 @@ const (
 	// appears only when segments were actually DROPPED — the mark means
 	// "there was more" — so a too-MANY-hops path, already within
 	// MaxFilterDepth by the time it is counted, always comes back whole and
-	// unmarked.
+	// unmarked. It is the PER-PATH family of bounds plus the node count;
+	// the tree-wide bound on to-many hops is FILTER_TOO_EXPENSIVE.
 	FILTER_TOO_DEEP Code = "FILTER_TOO_DEEP"
+
+	// FILTER_TOO_EXPENSIVE is returned by ResolveFilter when the filter tree's
+	// to-many hops, summed over every condition, exceed
+	// Limits.MaxFilterSubqueries — each one is a correlated subquery in the
+	// adapter's SQL, so the total is what the tree costs. As with
+	// INCLUDE_TOO_EXPENSIVE the fault is the tree, not a position in it, so
+	// Path is empty; the client fixes it by dropping conditions that cross
+	// to-many edges.
+	FILTER_TOO_EXPENSIVE Code = "FILTER_TOO_EXPENSIVE"
 
 	// NOT_FOUND is returned when the requested root entity does not exist.
 	NOT_FOUND Code = "NOT_FOUND"

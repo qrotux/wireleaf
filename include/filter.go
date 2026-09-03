@@ -16,7 +16,9 @@
 //   - A to-many hop carries a QUANTIFIER (any / all / none) on its FilterStep;
 //     the adapter turns each one into a correlated EXISTS / NOT EXISTS. A
 //     to-one hop carries none. Limits.MaxFilterMany bounds the to-many hops
-//     of one path (each is a nested subquery), MaxFilterDepth all hops.
+//     of one path (each is a nested subquery), MaxFilterDepth all hops, and
+//     MaxFilterSubqueries the to-many hops of the WHOLE tree summed together —
+//     the per-path bounds say nothing about a tree of many cheap conditions.
 //   - Generating SQL (joins, EXISTS) is the adapter's job, outside this
 //     module. ResolvedCond.Hops is what it walks.
 
@@ -137,8 +139,10 @@ func (ResolvedCond) resolvedFilterNode() {}
 
 // ResolveFilter checks f against root's graph and returns its SQL-side twin.
 // Errors are *Error: INVALID_FILTER for anything the graph does not admit,
-// FILTER_TOO_DEEP for a tree beyond opts.Limits (zero fields mean
-// DefaultLimits). A nil f resolves to nil. Like ResolvePlan it runs before
+// FILTER_TOO_DEEP for a path or node count beyond opts.Limits,
+// FILTER_TOO_EXPENSIVE for a tree whose total to-many hops exceed
+// Limits.MaxFilterSubqueries (zero fields mean DefaultLimits). A nil f
+// resolves to nil. Like ResolvePlan it runs before
 // any fetch: a handler resolves the client's filter, then hands the result
 // to its RootFetcher through QueryArgs.Where.
 func ResolveFilter(root Resource, f Filter, opts Options) (ResolvedFilter, error) {
@@ -151,10 +155,11 @@ func ResolveFilter(root Resource, f Filter, opts Options) (ResolvedFilter, error
 		return nil, NewError(INVALID_FILTER, "")
 	}
 	r := &filterResolver{
-		root:     root,
-		maxDepth: opts.Limits.MaxFilterDepth,
-		maxMany:  opts.Limits.MaxFilterMany,
-		maxNodes: opts.Limits.MaxFilterNodes,
+		root:          root,
+		maxDepth:      opts.Limits.MaxFilterDepth,
+		maxMany:       opts.Limits.MaxFilterMany,
+		maxNodes:      opts.Limits.MaxFilterNodes,
+		maxSubqueries: opts.Limits.MaxFilterSubqueries,
 	}
 	if r.maxDepth == 0 {
 		r.maxDepth = DefaultLimits.MaxFilterDepth
@@ -165,13 +170,17 @@ func ResolveFilter(root Resource, f Filter, opts Options) (ResolvedFilter, error
 	if r.maxNodes == 0 {
 		r.maxNodes = DefaultLimits.MaxFilterNodes
 	}
+	if r.maxSubqueries == 0 {
+		r.maxSubqueries = DefaultLimits.MaxFilterSubqueries
+	}
 	return r.resolve(f, "")
 }
 
 type filterResolver struct {
-	root                        Resource
-	maxDepth, maxMany, maxNodes int
-	nodes                       int // conditions + groups seen so far
+	root                                       Resource
+	maxDepth, maxMany, maxNodes, maxSubqueries int
+	nodes                                      int // conditions + groups seen so far
+	subqueries                                 int // to-many hops seen so far, tree-wide
 }
 
 // resolve walks one AST node. at is the node's POSITION in the tree — "" at
@@ -300,6 +309,11 @@ func (r *filterResolver) cond(c FilterCond) (ResolvedFilter, error) {
 			if many > r.maxMany {
 				return nil, NewError(FILTER_TOO_DEEP, truncPath(keys, r.maxDepth+1))
 			}
+			// The tree-wide total is counted here and JUDGED after the path is
+			// walked, so a path that breaks the per-path bound reports
+			// FILTER_TOO_DEEP — the narrower, more actionable fault — rather
+			// than the tree being blamed for one over-long condition.
+			r.subqueries++
 		}
 		next := e.Target()
 		// A hand-built graph may return a nil target; Compile never produces one.
@@ -308,6 +322,10 @@ func (r *filterResolver) cond(c FilterCond) (ResolvedFilter, error) {
 		}
 		hops = append(hops, FilterHop{Key: step.Key, Edge: e, Quant: step.Quant, From: cur, To: next})
 		cur = next
+	}
+	if r.subqueries > r.maxSubqueries {
+		// A cost fault is about the tree, not a position in it.
+		return nil, NewError(FILTER_TOO_EXPENSIVE, "")
 	}
 	col, ok := ColumnsOf(cur)[c.Field]
 	if !ok {
@@ -322,6 +340,40 @@ func (r *filterResolver) cond(c FilterCond) (ResolvedFilter, error) {
 		return nil, NewError(INVALID_FILTER, condPath(keys, c.Field)+":"+clientEcho(string(c.Op)))
 	}
 	return ResolvedCond{Hops: hops, Column: col, Op: c.Op, Value: c.Value, Node: cur}, nil
+}
+
+// FilterSubqueries reports the number of to-many hops in a resolved tree —
+// every hop carrying a non-empty Quant, which the adapter emits as one
+// correlated EXISTS / NOT EXISTS. It is the number ResolveFilter compared
+// against Limits.MaxFilterSubqueries, exposed so an application can read the
+// cost back and reserve it in its own budget next to plan.Cost — an
+// examples/costlimit-style bucket charging a request for the subqueries its
+// filter will run, not only the rows its includes will fetch. A nil filter
+// costs 0.
+func FilterSubqueries(f ResolvedFilter) int {
+	switch n := f.(type) {
+	case ResolvedAnd:
+		total := 0
+		for _, m := range n {
+			total += FilterSubqueries(m)
+		}
+		return total
+	case ResolvedOr:
+		total := 0
+		for _, m := range n {
+			total += FilterSubqueries(m)
+		}
+		return total
+	case ResolvedCond:
+		total := 0
+		for _, h := range n.Hops {
+			if h.Quant != "" {
+				total++
+			}
+		}
+		return total
+	}
+	return 0
 }
 
 func quantKnown(q Quant) bool {

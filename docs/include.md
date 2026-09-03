@@ -395,6 +395,11 @@ Resolution rules:
 - every hop must be a `Filterable` edge; a **to-many** hop must carry a
   quantifier (`any` / `all` / `none`) and a **to-one** hop must not; the
   path may cross at most `Limits.MaxFilterMany` to-many hops;
+- the whole tree may contain at most `Limits.MaxFilterSubqueries` to-many hops
+  summed over every condition — a tree-wide bound on correlated subqueries,
+  reported as `FILTER_TOO_EXPENSIVE` with an empty `Path` (the per-path
+  `MaxFilterMany` is judged first, so an over-long single path is still
+  `FILTER_TOO_DEEP`);
 - the leaf must be a `Filterable` column of the node the path reaches
   (`ColumnSource`); a root that is no `ColumnSource` has no filterable column;
 - `eq`/`ne`/`in`/`nin` apply to every column, `lt`/`lte`/`gt`/`gte` to
@@ -415,6 +420,9 @@ A handler resolves before it fetches (the same 400-before-fetch rule as
 `ResolvePlan`) and hands the result to its `RootFetcher` through
 `QueryArgs.Where`. The client's spelling never reaches SQL text: an adapter
 walks `Hops` and `Column.Col`, both compile-time constants from struct tags.
+`FilterSubqueries(resolved)` reads that cost back: it is the number of to-many
+hops the tree will run as correlated subqueries, the number to reserve in an
+application cost bucket next to `plan.Cost`.
 
 ### Quantifiers
 
@@ -530,6 +538,7 @@ opts := include.Options{Limits: include.Limits{
 | `MaxFilterDepth` | 4 | edge hops in one filter condition (`author.name` = 1) | `FILTER_TOO_DEEP` |
 | `MaxFilterMany` | 2 | to-many hops in one filter condition (each is a nested `EXISTS`) | `FILTER_TOO_DEEP` |
 | `MaxFilterNodes` | 32 | conditions + groups in one filter tree | `FILTER_TOO_DEEP` |
+| `MaxFilterSubqueries` | 8 | to-many hops summed over the whole filter tree (correlated subqueries) | `FILTER_TOO_EXPENSIVE` |
 
 `MaxFilterMany` is counted within `MaxFilterDepth`, and at the defaults (2
 within 4) it refuses the **third** to-many hop of one path — two nested
@@ -538,9 +547,15 @@ within 4) it refuses the **third** to-many hop of one path — two nested
 `MaxFilterDepth`, to allow more deeply nested `EXISTS`; lower it to
 `MaxFilterMany: 1` to allow one `EXISTS` around a chain of joins.
 
-A zero `MaxCost`, `MaxRows`, `MaxFilterDepth`, `MaxFilterMany` or
-`MaxFilterNodes` means the default, so a literal that names only `MaxDepth`
-and `MaxNodes` keeps working.
+`MaxFilterSubqueries` is the tree-wide twin of `MaxFilterMany`: the per-path
+bound says nothing about a tree of many cheap conditions, and thirty one-hop
+conditions are thirty correlated subqueries. It is summed over every condition
+in the tree, and the per-path bound is judged first, so one over-long path
+still reports `FILTER_TOO_DEEP`.
+
+A zero `MaxCost`, `MaxRows`, `MaxFilterDepth`, `MaxFilterMany`,
+`MaxFilterNodes` or `MaxFilterSubqueries` means the default, so a literal that
+names only `MaxDepth` and `MaxNodes` keeps working.
 `include.DefaultOptions` is `{Limits: DefaultLimits}`.
 
 `MaxCost` is computed by `ResolvePlan` after `exclude` is applied: every plan
@@ -662,6 +677,7 @@ Planning and facade failures are `*include.Error{Code, Path, Status}`
 | `INCLUDE_BUDGET_EXCEEDED` | 400 | rows materialized exceed `MaxRows` — mid-hydration, or up front in `HydrateByQuery` as `Cost × QueryArgs.Limit` |
 | `INVALID_FILTER` | 400 | `ResolveFilter`: unknown/non-filterable edge or column, root without columns, empty group, a to-many hop without a quantifier, a quantifier on a to-one hop, an unknown quantifier, unknown operator or operator illegal for the column type. For a leaf fault `Path` is `"a.b.field"`, the path up to the bad edge, `"a.b.field:op"`, or `"a.b:quant"`; for a **structural** fault (empty group, nil member, nil node) it is the node's position in the tree — `"and[1]"`, `"or[0].and[2]"` — since group members carry no names. The root has no position: an empty root-level group reports `""` |
 | `FILTER_TOO_DEEP` | 400 | `MaxFilterDepth`, `MaxFilterMany` **or** `MaxFilterNodes` exceeded; for a too-deep or too-many path `Path` is the client path's keys cut to `MaxFilterDepth+1` segments, each one itself bounded to 16 bytes plus `…`, with a trailing `…` only when segments were actually dropped — so a too-many-hops path (bounded by `MaxFilterDepth` already) always comes back whole and unmarked (a node-count fault carries an empty `Path`) |
+| `FILTER_TOO_EXPENSIVE` | 400 | `ResolveFilter`: the tree's to-many hops, summed over every condition, exceed `MaxFilterSubqueries`. A tree-wide fault, so `Path` is empty; the client fixes it by dropping conditions that cross to-many edges |
 | `NOT_FOUND` | 404 | `HydrateByID`'s fetch returned a nil doc |
 
 Materialize-time failures — a fetcher error, a missing registration, a strict

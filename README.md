@@ -457,6 +457,7 @@ the HTTP layer maps onto its own error type. `Status` defaults to 400.
 | `NOT_FOUND` | 404 | `HydrateByID`'s fetch closure returned a nil doc. |
 | `INVALID_FILTER` | 400 | `ResolveFilter`: unknown/non-filterable edge or column, root without columns, empty group, a to-many hop without a quantifier, a quantifier on a to-one hop, an unknown quantifier, unknown operator or operator illegal for the column type (`Path` is `"a.b.field"`, the path up to the bad edge, `"a.b.field:op"`, or `"a.b:quant"`). |
 | `FILTER_TOO_DEEP` | 400 | `Limits.MaxFilterDepth`, `Limits.MaxFilterMany` **or** `Limits.MaxFilterNodes` exceeded. |
+| `FILTER_TOO_EXPENSIVE` | 400 | `Limits.MaxFilterSubqueries` exceeded: the filter tree's to-many hops, summed over every condition, are more correlated subqueries than allowed. Drop conditions that cross to-many edges. |
 
 ## Boundaries
 

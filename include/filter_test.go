@@ -316,6 +316,13 @@ func TestResolveFilterErrors(t *testing.T) {
 		{name: "overlong key at a many-bounded hop", root: book, f: FilterCond{Path: []FilterStep{{Key: "reviews", Quant: QuantAny}, {Key: longKey, Quant: QuantAny}}, Field: "rating", Op: OpEq}, opts: Options{Limits: Limits{MaxFilterMany: 1}}, code: INVALID_FILTER, path: "reviews." + cutKey},
 		{name: "nil root", root: nil, f: FilterCond{Field: "title", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: ""},
 		{name: "too many nodes", root: book, f: FilterAnd{FilterCond{Field: "title", Op: OpEq}, FilterCond{Field: "title", Op: OpEq}, FilterCond{Field: "title", Op: OpEq}}, opts: Options{Limits: Limits{MaxFilterNodes: 3}}, code: FILTER_TOO_DEEP, path: ""},
+		// The two bounds meet on one path: MaxFilterMany is the per-PATH one and
+		// is reached first, on the third to-many hop, so the client is told the
+		// path is too deep — not that the tree is too expensive.
+		{name: "per-path many bound beats the tree bound", root: book, f: FilterCond{Path: []FilterStep{{Key: "reviews", Quant: QuantAny}, {Key: "replies", Quant: QuantAny}, {Key: "replies", Quant: QuantAny}}, Field: "rating", Op: OpEq}, opts: Options{Limits: Limits{MaxFilterSubqueries: 1}}, code: FILTER_TOO_DEEP, path: "reviews.replies.replies"},
+		// Two paths of two to-many hops each: neither breaks MaxFilterMany, the
+		// four subqueries together break the tree bound. Tree-wide fault, no path.
+		{name: "too many subqueries across conditions", root: book, f: FilterAnd{FilterCond{Path: []FilterStep{{Key: "reviews", Quant: QuantAny}, {Key: "replies", Quant: QuantAny}}, Field: "rating", Op: OpEq}, FilterCond{Path: []FilterStep{{Key: "reviews", Quant: QuantAny}, {Key: "replies", Quant: QuantAny}}, Field: "rating", Op: OpEq}}, opts: Options{Limits: Limits{MaxFilterSubqueries: 3}}, code: FILTER_TOO_EXPENSIVE, path: ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -417,5 +424,76 @@ func TestResolveFilterDefaultDepth(t *testing.T) {
 	book, _, _ := filterGraph()
 	if _, err := ResolveFilter(book, FilterCond{Path: steps("author", "self", "self", "self"), Field: "name", Op: OpEq}, Options{}); err != nil {
 		t.Errorf("depth 4 under zero limits: %v (0 must mean DefaultLimits.MaxFilterDepth = 4)", err)
+	}
+}
+
+// ------------------------------------------------------------------ subqueries
+//
+// MaxFilterSubqueries bounds the to-many hops of the WHOLE tree, where
+// MaxFilterMany bounds those of one path: four independent one-hop conditions
+// are four correlated subqueries, and nothing else in Limits counts them.
+
+func TestResolveFilterSubqueries(t *testing.T) {
+	book, _, _ := filterGraph()
+	oneHop := FilterCond{Path: []FilterStep{{Key: "reviews", Quant: QuantAny}}, Field: "rating", Op: OpEq, Value: 5}
+	four := FilterAnd{oneHop, oneHop, oneHop, oneHop}
+
+	got, err := ResolveFilter(book, four, Options{})
+	if err != nil {
+		t.Fatalf("ResolveFilter(4 hops, defaults) = %v, want nil", err)
+	}
+	if n := FilterSubqueries(got); n != 4 {
+		t.Errorf("FilterSubqueries = %d, want 4", n)
+	}
+
+	_, err = ResolveFilter(book, four, Options{Limits: Limits{MaxFilterSubqueries: 3}})
+	var e *Error
+	if !errors.As(err, &e) {
+		t.Fatalf("err = %v, want *Error", err)
+	}
+	if e.Code != FILTER_TOO_EXPENSIVE || e.Path != "" || e.Status != 400 {
+		t.Errorf("err = %+v, want FILTER_TOO_EXPENSIVE, Path \"\", Status 400", e)
+	}
+
+	// A tree that crosses no to-many edge costs nothing, whatever the bound.
+	flat, err := ResolveFilter(book, FilterCond{Path: steps("author"), Field: "name", Op: OpEq},
+		Options{Limits: Limits{MaxFilterSubqueries: 1}})
+	if err != nil {
+		t.Fatalf("ResolveFilter(to-one) = %v, want nil", err)
+	}
+	if n := FilterSubqueries(flat); n != 0 {
+		t.Errorf("FilterSubqueries(to-one) = %d, want 0", n)
+	}
+	if n := FilterSubqueries(nil); n != 0 {
+		t.Errorf("FilterSubqueries(nil) = %d, want 0", n)
+	}
+}
+
+// The default of 8 bites on the ninth one-hop condition, a tree well inside
+// MaxFilterNodes (32) and MaxFilterMany (2).
+func TestResolveFilterDefaultSubqueries(t *testing.T) {
+	book, _, _ := filterGraph()
+	oneHop := FilterCond{Path: []FilterStep{{Key: "reviews", Quant: QuantAny}}, Field: "rating", Op: OpEq, Value: 5}
+	conds := func(n int) FilterAnd {
+		out := make(FilterAnd, n)
+		for i := range out {
+			out[i] = oneHop
+		}
+		return out
+	}
+	got, err := ResolveFilter(book, conds(8), Options{})
+	if err != nil {
+		t.Fatalf("ResolveFilter(8) = %v, want nil", err)
+	}
+	if n := FilterSubqueries(got); n != 8 {
+		t.Errorf("FilterSubqueries = %d, want 8", n)
+	}
+	_, err = ResolveFilter(book, conds(9), Options{})
+	var e *Error
+	if !errors.As(err, &e) {
+		t.Fatalf("err = %v, want *Error", err)
+	}
+	if e.Code != FILTER_TOO_EXPENSIVE || e.Path != "" {
+		t.Errorf("err = %+v, want FILTER_TOO_EXPENSIVE, Path \"\"", e)
 	}
 }

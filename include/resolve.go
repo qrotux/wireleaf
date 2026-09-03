@@ -42,10 +42,18 @@ type Limits struct {
 	// MaxFilterNodes caps the size of one filter tree: conditions and groups
 	// together. 0 means DefaultLimits.MaxFilterNodes.
 	MaxFilterNodes int
+	// MaxFilterSubqueries is the most to-many hops (correlated subqueries) one
+	// filter tree may contain IN TOTAL, summed over every condition, where
+	// MaxFilterMany bounds those of a single path. Without it a tree inside
+	// every other limit — dozens of independent one-hop conditions — is dozens
+	// of correlated subqueries in the adapter's SQL, the closest thing to a
+	// cost this package can know without seeing the schema. 0 means
+	// DefaultLimits.MaxFilterSubqueries.
+	MaxFilterSubqueries int
 }
 
 // DefaultLimits is the engine-wide default.
-var DefaultLimits = Limits{MaxDepth: 4, MaxNodes: 50, MaxCost: 5000, MaxRows: 50000, MaxFilterDepth: 4, MaxFilterMany: 2, MaxFilterNodes: 32}
+var DefaultLimits = Limits{MaxDepth: 4, MaxNodes: 50, MaxCost: 5000, MaxRows: 50000, MaxFilterDepth: 4, MaxFilterMany: 2, MaxFilterNodes: 32, MaxFilterSubqueries: 8}
 
 // ------------------------------------------------------------------ Options
 
