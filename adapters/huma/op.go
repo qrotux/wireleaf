@@ -38,6 +38,18 @@ type ErrorDef struct {
 	Message string
 }
 
+// Err returns the runtime error this catalogue entry documents: a huma status
+// error carrying Status and "CODE: message", plus " (detail)" when detail is
+// not empty. Declaring the def once and using it both in Errors(...) and in
+// the handler keeps the document and the responses from drifting apart.
+func (d ErrorDef) Err(detail string) error {
+	msg := d.Code + ": " + d.Message
+	if detail != "" {
+		msg += " (" + detail + ")"
+	}
+	return humav2.NewError(d.Status, msg)
+}
+
 // OpOpt decorates an operation before registration.
 type OpOpt func(*humav2.Operation)
 
@@ -92,14 +104,40 @@ func Errors(defs ...ErrorDef) OpOpt {
 			for _, def := range byStatus[status] {
 				parts = append(parts, fmt.Sprintf("%s (HTTP %d): %s", def.Code, def.Status, def.Message))
 			}
-			op.Responses[strconv.Itoa(status)] = &humav2.Response{
-				Description: strings.Join(parts, "; "),
+			key := strconv.Itoa(status)
+			if prev := op.Responses[key]; prev != nil && isErrorRefResponse(prev) {
+				parts = append(strings.Split(prev.Description, "; "), parts...)
+			}
+			op.Responses[key] = &humav2.Response{
+				Description: strings.Join(dedupe(parts), "; "),
 				Content: map[string]*humav2.MediaType{
 					"application/json": {Schema: &humav2.Schema{Ref: apidoc.RefPrefix + ErrorComponent}},
 				},
 			}
 		}
 	}
+}
+
+// isErrorRefResponse reports whether r is one Errors built: a JSON body that
+// is a bare $ref to the Error component. Only those are merged; anything else
+// at the status is the application's own response and is replaced.
+func isErrorRefResponse(r *humav2.Response) bool {
+	mt := r.Content["application/json"]
+	return mt != nil && mt.Schema != nil && mt.Schema.Ref == apidoc.RefPrefix+ErrorComponent
+}
+
+// dedupe removes empty and repeated parts, preserving first-seen order.
+func dedupe(parts []string) []string {
+	seen := make(map[string]bool, len(parts))
+	out := parts[:0]
+	for _, p := range parts {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
 }
 
 // IncludeParam appends the ?include= query parameter for res: an optional

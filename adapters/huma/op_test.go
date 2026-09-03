@@ -72,6 +72,46 @@ func TestOpErrorsGroupsByStatus(t *testing.T) {
 	}
 }
 
+func TestErrorsMergeByStatus(t *testing.T) {
+	a := ErrorDef{Status: 404, Code: "A", Message: "a"}
+	b := ErrorDef{Status: 404, Code: "B", Message: "b"}
+	op := Op(humav2.Operation{}, Errors(a), Errors(b, a))
+	got := op.Responses["404"].Description
+	if got != "A (HTTP 404): a; B (HTTP 404): b" {
+		t.Fatalf("description = %q", got)
+	}
+}
+
+func TestErrorDefErr(t *testing.T) {
+	d := ErrorDef{Status: 409, Code: "AUTHOR_UNKNOWN", Message: "no such author"}
+	err := d.Err("a9")
+	se, ok := err.(humav2.StatusError)
+	if !ok || se.GetStatus() != 409 || !strings.Contains(err.Error(), "AUTHOR_UNKNOWN: no such author (a9)") {
+		t.Fatalf("Err = %v", err)
+	}
+}
+
+func TestErrorsReplacesNonErrorRefResponse(t *testing.T) {
+	base := humav2.Operation{
+		Responses: map[string]*humav2.Response{
+			"404": {
+				Description: "application's own 404",
+				Content: map[string]*humav2.MediaType{
+					"application/json": {Schema: &humav2.Schema{Type: "object"}},
+				},
+			},
+		},
+	}
+	op := Op(base, Errors(ErrorDef{Status: 404, Code: "NOT_FOUND", Message: "gone"}))
+	got := op.Responses["404"]
+	if got.Description != "NOT_FOUND (HTTP 404): gone" {
+		t.Errorf("a non-Error-ref response at the status must be REPLACED, not merged: %q", got.Description)
+	}
+	if got.Content["application/json"].Schema.Ref != apidoc.RefPrefix+ErrorComponent {
+		t.Errorf("replaced response must carry the Error $ref: %#v", got)
+	}
+}
+
 func TestOpErrorsEmptyIsANoOp(t *testing.T) {
 	op := Op(humav2.Operation{OperationID: "x"}, Errors())
 	if op.Responses != nil {

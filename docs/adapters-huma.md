@@ -138,6 +138,7 @@ func Errors(defs ...ErrorDef) OpOpt
 func IncludeParam(res include.Resource) OpOpt
 func IncludeParamWithLimits(res include.Resource, lim include.Limits) OpOpt
 type ErrorDef struct{ Status int; Code, Message string }
+func (d ErrorDef) Err(detail string) error
 ```
 
 `Op` takes `base` **by value** and detaches the two reference fields before any
@@ -145,9 +146,19 @@ decorator runs: `Responses` is cloned, `Parameters` is capacity-clamped so an
 append allocates. A shared base template therefore cannot leak one route's
 errors or parameters into the next.
 
-- **`Errors`** emits one response per *status* (sorted): codes sharing a status
-  join into one description as `"CODE (HTTP n): message"` separated by `"; "`,
-  and the body is a `$ref` to the `Error` component. No last-writer-wins.
+- **`Errors`** merges by status (sorted): codes sharing a status join into one
+  description as `"CODE (HTTP n): message"` separated by `"; "`, and the body
+  is a `$ref` to the `Error` component. Two `Errors` calls (or a base template
+  plus an `Errors` call) contributing to the same status merge their
+  descriptions instead of one overwriting the other; a duplicate def is not
+  repeated. A pre-existing response at that status whose body is not the
+  `Error` `$ref` is treated as the application's own and is replaced, not
+  merged into. No last-writer-wins on distinct codes.
+- **`ErrorDef.Err(detail)`** returns the runtime error the def documents: a
+  huma status error with status `d.Status` and message `"CODE: message"`, plus
+  `" (detail)"` when `detail` is non-empty. Declaring the def once and using it
+  both in `Errors(...)` and in the handler keeps the document and the response
+  from drifting apart.
 - **`IncludeParam`** appends an optional `include` query parameter of type
   string whose valid paths are enumerated from the graph itself (depth-first
   walk over includable edges bounded by `include.DefaultLimits`; use
