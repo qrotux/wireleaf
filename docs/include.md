@@ -424,6 +424,11 @@ walks `Hops` and `Column.Col`, both compile-time constants from struct tags.
 hops the tree will run as correlated subqueries, the number to reserve in an
 application cost bucket next to `plan.Cost`.
 
+`examples/filter/main.go` is the runnable reference for both application-owned
+halves: a JSON `where` parser producing `include.Filter`, and a printer that
+renders the `ResolvedFilter` as SQL — joins, the three `EXISTS` templates, and
+bound arguments — without a database.
+
 ### Quantifiers
 
 A to-many hop asks how one parent's children decide the parent's fate. The

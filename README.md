@@ -306,7 +306,7 @@ next. Other pieces: `wfhuma.RegisterNode[W]` for a `Node[W]` body wrapper,
 | reflector | `reflector` | `jsonschema-go` | `*reflector.Reflector` — the canonical `apidoc.Reflector`: Go struct → wireleaf IR, with the nullability policy, naming, and constraint mapping the whole stack agrees on. |
 | crosscheck | `apidoc/crosscheck` | `santhosh-tekuri/jsonschema/v6` | Test-only: compiles an emitted component set with a real draft-2020-12 validator and validates instances against it. |
 | huma adapter | `adapters/huma` | huma, reflector | `NewConfig` / `WithRegistry`, the `Registry` bridge, `Op` and its decorators, the envelope and `Node[W]` types, `BuildInto`. |
-| examples | `examples` | core, reflector, huma adapter | `basic`, `policies`, `costlimit`, `huma` — runnable programs, `basic` is the quick-start. |
+| examples | `examples` | core, reflector, huma adapter | `basic`, `policies`, `costlimit`, `filter`, `huma` — runnable programs, `basic` is the quick-start. |
 
 An application on another documentation stack implements `apidoc.Reflector`
 itself and imports neither `reflector` nor `adapters/huma`.
@@ -441,6 +441,10 @@ traversed — to-one as a join, reverse / to-many with a quantifier per hop
 only. Parsing a JSON `where` body or a `?where[field][op]=` query string and
 generating the SQL (joins, `EXISTS`) are the application adapter's job; the
 resolved filter reaches its root fetcher through `include.QueryArgs.Where`.
+[`examples/filter/main.go`](examples/filter/main.go) is the reference for the
+two pieces an application owns — a JSON `where` parser and a SQL renderer over
+`ResolveFilter` — and [`examples/costlimit`](examples/costlimit/main.go) shows
+`include.FilterSubqueries` in a cost bucket.
 See [`docs/include.md` → Filters](docs/include.md#filters).
 
 ## Errors

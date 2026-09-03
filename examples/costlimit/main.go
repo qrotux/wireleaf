@@ -1,7 +1,8 @@
-// Command costlimit shows a cost-based rate limiter built on the two numbers
+// Command costlimit shows a cost-based rate limiter built on the three numbers
 // the engine exposes for it: plan.Cost, the static row estimate ResolvePlan
-// computed for one root document, and ctx.Rows(), the rows a hydration
-// actually materialized.
+// computed for one root document, ctx.Rows(), the rows a hydration actually
+// materialized, and include.FilterSubqueries, the correlated EXISTS a resolved
+// filter will run.
 //
 // The pattern is the one GitHub and Shopify use for GraphQL: every client owns
 // a bucket of points that refills over time; a request RESERVES its estimated
@@ -92,7 +93,7 @@ type AuthorWire struct {
 
 type BookWire struct {
 	ID    string `json:"id"`
-	Title string `json:"title"`
+	Title string `json:"title" col:"title,filter"`
 }
 
 type ReviewWire struct {
@@ -181,7 +182,7 @@ func buildGraph() (*graph.Graph, include.Resource) {
 
 	// The per-edge Limit is the cost multiplier: books.reviews on one author
 	// is estimated as 1 + 10 + 10×20 = 211 rows.
-	author.Edge("books", graph.Reverse[BookWire]("authorId")).Limit(10).Includable()
+	author.Edge("books", graph.Reverse[BookWire]("authorId")).Limit(10).Includable().Filterable()
 	book.Edge("reviews", graph.Reverse[ReviewWire]("bookId")).Limit(20).Includable()
 
 	graph.FetchIDs(b, author, byIDs(authors))
@@ -203,7 +204,7 @@ func buildGraph() (*graph.Graph, include.Resource) {
 var errRateLimited = errors.New("429 rate limited: include too expensive for the remaining budget")
 
 // listAuthors is what an HTTP handler does per request, minus the HTTP.
-func listAuthors(g *graph.Graph, res include.Resource, bucket *costBucket, includeQS string, page int) error {
+func listAuthors(g *graph.Graph, res include.Resource, bucket *costBucket, includeQS string, where include.Filter, page int) error {
 	inc, err := include.ParseInclude(includeQS)
 	if err != nil {
 		return err
@@ -216,7 +217,19 @@ func listAuthors(g *graph.Graph, res include.Resource, bucket *costBucket, inclu
 	if err != nil {
 		return err // 400: INVALID_INCLUDE / INCLUDE_TOO_DEEP / INCLUDE_TOO_EXPENSIVE
 	}
-	reserved := plan.Cost * page
+	// 1b. The filter is the second half of the estimate: ResolveFilter is
+	//     equally pure, and FilterSubqueries counts the correlated EXISTS the
+	//     adapter will emit. A nil filter costs nothing.
+	resolved, err := include.ResolveFilter(res, where, opts)
+	if err != nil {
+		return err // 400: INVALID_FILTER / FILTER_TOO_DEEP / FILTER_TOO_EXPENSIVE
+	}
+	// What one correlated EXISTS is worth is a property of the schema and the
+	// planner, not of anything the core reports — a placeholder an application
+	// calibrates against its own plans.
+	const subqueryCost = 50
+	filterCost := include.FilterSubqueries(resolved) * subqueryCost
+	reserved := plan.Cost*page + filterCost
 	if !bucket.Reserve(reserved) {
 		return errRateLimited
 	}
@@ -224,6 +237,8 @@ func listAuthors(g *graph.Graph, res include.Resource, bucket *costBucket, inclu
 	// 2. Hydrate. HydrateByQuery re-plans internally (same inputs, same
 	//    result) and enforces MaxRows on top of the bucket.
 	ctx := &include.Ctx{Registry: g}
+	// This in-memory fetcher ignores q.Where; a SQL one renders it the way
+	// examples/filter does. What is measured here is the cost, not the rows.
 	fetch := func(_ *include.Ctx, q include.QueryArgs) ([]any, int, bool, error) {
 		ids := sortedKeys(authors)
 		docs := make([]any, 0, min(q.Limit, len(ids)))
@@ -232,15 +247,21 @@ func listAuthors(g *graph.Graph, res include.Resource, bucket *costBucket, inclu
 		}
 		return docs, len(ids), len(ids) > q.Limit, nil
 	}
-	result, _, err := include.HydrateByQuery(res, include.QueryArgs{Limit: page}, inc, nil, fetch, ctx, opts)
+	result, _, err := include.HydrateByQuery(res, include.QueryArgs{Where: resolved, Limit: page}, inc, nil, fetch, ctx, opts)
 
 	// 3. Settle to the real cost — refund the over-estimate, or charge the
-	//    difference — whether or not hydration succeeded.
-	bucket.Settle(reserved, ctx.Rows())
+	//    difference — whether or not hydration succeeded. The filter's share
+	//    is carried into the actual: the subqueries ran regardless of how many
+	//    rows came back, so unlike the include estimate there is nothing to
+	//    refund there.
+	bucket.Settle(reserved, ctx.Rows()+filterCost)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("  include=%-15q page=%d  estimate=%4d  actual=%3d  docs=%d\n", includeQS, page, reserved, ctx.Rows(), len(result.Data))
+	// The settled amount is what the bucket is actually charged: the rows the
+	// hydration materialized plus the filter's share, which is not refundable.
+	fmt.Printf("  include=%-15q page=%d  estimate=%4d (filter %3d)  settled=%4d (rows %3d + filter %3d)  docs=%d\n",
+		includeQS, page, reserved, filterCost, ctx.Rows()+filterCost, ctx.Rows(), filterCost, len(result.Data))
 	return nil
 }
 
@@ -251,16 +272,27 @@ func main() {
 	clock := time.Unix(0, 0)
 	bucket := newBucket(1000, 50, func() time.Time { return clock })
 
+	// One filtered request: authors having a book titled "Book 1" — one
+	// to-many hop, so one correlated EXISTS on top of the include estimate.
+	titled := include.FilterCond{
+		Path:  []include.FilterStep{{Key: "books", Quant: include.QuantAny}},
+		Field: "title",
+		Op:    include.OpEq,
+		Value: "Book 1",
+	}
+
 	for _, req := range []struct {
-		inc  string
-		page int
+		inc   string
+		where include.Filter
+		page  int
 	}{
-		{"books", 2},         // 2 × (1 + 10) = 22 points
-		{"books.reviews", 2}, // 2 × 211 = 422 points
-		{"books.reviews", 2}, // 422 more: 134 left
-		{"books.reviews", 2}, // 422 > 134 → 429 before any SQL
+		{"books", nil, 2},         // 2 × (1 + 10) = 22 points
+		{"books", titled, 2},      // 22 + one EXISTS = 72 points
+		{"books.reviews", nil, 2}, // 2 × 211 = 422 points
+		{"books.reviews", nil, 2}, // 422 more
+		{"books.reviews", nil, 2}, // over budget → 429 before any SQL
 	} {
-		if err := listAuthors(g, authorRes, bucket, req.inc, req.page); err != nil {
+		if err := listAuthors(g, authorRes, bucket, req.inc, req.where, req.page); err != nil {
 			fmt.Printf("  include=%-15q page=%d  -> %v\n", req.inc, req.page, err)
 		}
 		fmt.Printf("  bucket: %.0f/%.0f points left\n", bucket.tokens, bucket.capacity)
@@ -270,7 +302,7 @@ func main() {
 	// request is affordable again.
 	clock = clock.Add(10 * time.Second)
 	fmt.Println("...10s later")
-	if err := listAuthors(g, authorRes, bucket, "books.reviews", 2); err != nil {
+	if err := listAuthors(g, authorRes, bucket, "books.reviews", nil, 2); err != nil {
 		fmt.Println(" ", err)
 	}
 	fmt.Printf("  bucket: %.0f/%.0f points left\n", bucket.tokens, bucket.capacity)
