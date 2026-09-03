@@ -70,6 +70,9 @@ type reviewFallbackReg struct {
 var _ Registry = (*reviewFallbackReg)(nil)
 
 func (r *reviewFallbackReg) FetchByIDs(Resource) (FetchByIDs, bool) { return nil, false }
+func (r *reviewFallbackReg) FetchByEdge(Resource, string) (FetchByParents, bool) {
+	return nil, false
+}
 
 func (r *reviewFallbackReg) FetchByParents(Resource) (FetchByParents, bool) {
 	return func(_ *Ctx, parentIDs []string, q EdgeQuery) (map[string]ParentRows, error) {

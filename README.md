@@ -254,6 +254,45 @@ book.Edge("participants", graph.Computed(schema)).Includable()
 - **In-array edges** carry no `{items, hasMore}` frame and take no `EdgeQuery`: `Limit`, `Bare`
   and `Sort` are not legal on them.
 
+## Declarative nodes and relations
+
+The chained builder has a struct-literal twin, so a node can be declared next
+to its wire type — one file (or one domain package) per node — and the links
+between nodes can be declared once, in both directions, wherever the handles
+meet. Both are sugar over the chain: `Compile` sees the same declarations.
+
+```go
+// domain/author/author.go — knows nothing about books
+var Node = graph.Spec[Row, Wire]{
+	Name:       "Author",
+	Wire:       func(r Row, _ *include.Ctx) Wire { return Wire{ID: r.ID, Name: r.Name} },
+	PrimaryKey: func(r Row) string { return r.ID },
+	FetchIDs:   fetchByIDs,
+}
+
+// api/graph.go — the one package that imports every domain
+b := graph.NewBuilder()
+bk := graph.Add(b, book.Node)   // the same *NodeHandle graph.Node returns
+au := graph.Add(b, author.Node)
+
+graph.OneToMany(au, bk, "books", "author").                   // targets inferred from the handles
+	ForeignKey("authorId", func(r book.Row) string { return r.AuthorID }). // name + reader, typed by book.Row
+	Includable().                                              // both directions
+	Limit(10).                                                 // the many side
+	FetchParents(book.FetchByAuthor)                           // bound next to the link it serves
+
+b.Root(bk)
+g, err := b.Compile()
+```
+
+`Spec.Edges` (a `[]graph.EdgeSpec[Row]`) lets a node declare its own edges in
+the same literal when the whole graph lives in one package; `graph.ManyToMany`
+is the id-list counterpart of `OneToMany`. Domain packages never import each
+other, so cyclic graphs split across packages need no tricks. See
+[`examples/declarative`](examples/declarative) (`node_spec.go` for `Spec`,
+`graph_to_many.go` for the relations), [`examples/modular`](examples/modular)
+for the per-package split, and [docs/graph.md](docs/graph.md).
+
 ## huma integration
 
 `adapters/huma` is a separate module and the only huma-facing package. It is
@@ -319,7 +358,10 @@ this overview — lives in [`docs/`](docs/README.md).
 **Fetchers.** Two names, one fetcher: `graph.FetchParents` (and `FetchIDs`) is
 the *binder* you call on the builder, while `graph.FetchByParents[Row]` — erased
 to `include.FetchByParents` inside the engine — is the *contract type* of the
-closure you hand it. The rules below are the closure's.
+closure you hand it. A reverse fetcher can also be bound to one edge instead
+of the whole target node (`graph.FetchEdge`, or a relation's `FetchParents`);
+the engine prefers the edge's fetcher and falls back to the node's. The rules
+below are the closure's.
 
 `FetchByParents` is the *probe* contract: given `q.Limit == n`,
 select `n+1` rows, return at most `n`, and set `HasMore` iff the extra row

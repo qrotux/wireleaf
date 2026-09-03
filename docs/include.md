@@ -111,11 +111,23 @@ on hand-built edges: a **non-bare** edge with `Limit == 0` is not fetch-all —
 type Registry interface {
     FetchByIDs(r Resource) (FetchByIDs, bool)
     FetchByParents(r Resource) (FetchByParents, bool)
+    FetchByEdge(parent Resource, key string) (FetchByParents, bool) // reverse fetchers bound PER EDGE
 }
 
 type FetchByIDs      func(c *Ctx, ids []string) ([]any, error)
 type FetchByParents  func(c *Ctx, parentIDs []string, q EdgeQuery) (map[string]ParentRows, error)
 ```
+
+A reverse join belongs to the edge, not the target node — `author.books` and
+`tag.tagged` both load `Book` rows by different keys — so for a reverse edge
+the engine first asks `FetchByEdge(parent, key)` and falls back to
+`FetchByParents(target)` when the edge has no fetcher of its own (a
+`(nil, true)` answer counts as none). A registry with node-level fetchers
+only answers `(nil, false)`. A registry that **wraps** another (tracing,
+metrics) must forward `FetchByEdge` too — `FetchByEdge` is part of the
+interface precisely so that a wrapper cannot compile without it: a graph
+whose reverse edges are bound per edge has no node-level fetcher to fall
+back to, and `graph.Compile` has already accepted it.
 
 Both fetcher types **must be safe for concurrent use**: the v1 engine loads
 sibling edges sequentially, but the contract is concurrency-safe. A missing
@@ -162,7 +174,12 @@ input. `Limit` is `clamp(client :limit, 1, Edge.Limit)`; `Sort` has passed the
 default order) and is never a raw client string; `Args` holds the remaining
 declared arguments verbatim, minus the built-ins `limit`/`sort` (already
 folded into the other fields), `nil` when nothing remains — the values are
-shared with the plan, do not mutate them.
+shared with the plan, do not mutate them. `Edge` (`EdgeRef{Parent, Key}`,
+`String()` = `"Author.books"`) names the reverse edge being loaded — the owner
+resource, whose ids are in `parentIDs`, and the include key. A fetcher bound
+per edge already knows which edge it serves and may ignore it; a node-level
+fetcher shared by several inbound reverse edges switches on it to pick the
+join.
 
 ### Ctx
 

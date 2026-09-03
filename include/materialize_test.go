@@ -78,6 +78,10 @@ type parentCall struct {
 
 var _ Registry = (*spyReg)(nil)
 
+func (s *spyReg) FetchByEdge(p Resource, k string) (FetchByParents, bool) {
+	return s.inner.FetchByEdge(p, k)
+}
+
 func newSpyReg(inner Registry) *spyReg {
 	return &spyReg{
 		inner:       inner,
@@ -556,6 +560,9 @@ type stubParentsReg struct {
 var _ Registry = (*stubParentsReg)(nil)
 
 func (s *stubParentsReg) FetchByIDs(Resource) (FetchByIDs, bool) { return nil, false }
+func (s *stubParentsReg) FetchByEdge(Resource, string) (FetchByParents, bool) {
+	return nil, false
+}
 
 func (s *stubParentsReg) FetchByParents(Resource) (FetchByParents, bool) {
 	return func(_ *Ctx, parentIDs []string, q EdgeQuery) (map[string]ParentRows, error) {
@@ -598,6 +605,82 @@ func TestReverse_BatchOnceForLevel(t *testing.T) {
 	if want := []string{"p1", "p2", "p3"}; !reflect.DeepEqual(calls[0].ids, want) {
 		t.Errorf("parentIDs = %v, want %v (doc order, deduped)", calls[0].ids, want)
 	}
+	// The query names the edge and its owner, so a node with several inbound
+	// reverse edges can pick the join.
+	if want := (EdgeRef{Parent: g.A.Name(), Key: "kids"}); calls[0].q.Edge != want {
+		t.Errorf("EdgeQuery.Edge = %v, want %v", calls[0].q.Edge, want)
+	}
+}
+
+// edgeReg overrides a Registry's per-edge reverse fetchers.
+type edgeReg struct {
+	Registry
+	byEdge map[EdgeRef]FetchByParents
+}
+
+func (r *edgeReg) FetchByEdge(parent Resource, key string) (FetchByParents, bool) {
+	fn, ok := r.byEdge[EdgeRef{Parent: parent.Name(), Key: key}]
+	return fn, ok
+}
+
+// A per-edge fetcher wins over the target's node-level one; an edge without
+// one falls back to the node-level fetcher.
+func TestReverse_PerEdgeFetcherWinsOverNodeLevel(t *testing.T) {
+	g := buildToyGraph()
+	nodeCalls, edgeCalls := 0, 0
+	counting := &countingReg{Registry: g.Reg, onParents: func() { nodeCalls++ }}
+	reg := &edgeReg{Registry: counting, byEdge: map[EdgeRef]FetchByParents{
+		{Parent: g.A.Name(), Key: "kids"}: func(c *Ctx, parentIDs []string, q EdgeQuery) (map[string]ParentRows, error) {
+			edgeCalls++
+			if q.Edge != (EdgeRef{Parent: g.A.Name(), Key: "kids"}) {
+				t.Errorf("EdgeQuery.Edge = %v", q.Edge)
+			}
+			out := map[string]ParentRows{}
+			for _, id := range parentIDs {
+				out[id] = ParentRows{Rows: []any{toyBRow{id: "edge-" + id}}}
+			}
+			return out, nil
+		},
+	}}
+	ctx := byteCtx(reg)
+	plan := rootWith(g.A, childNode("kids", g.A.Edges()["kids"], g.B))
+
+	items, err := Materialize(plan, []any{toyARow{id: "p1"}}, ctx)
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	if edgeCalls != 1 || nodeCalls != 0 {
+		t.Errorf("edge fetcher calls = %d, node fetcher calls = %d; want 1 / 0", edgeCalls, nodeCalls)
+	}
+	if !strings.Contains(string(items[0]), `"id":"edge-p1"`) {
+		t.Errorf("rows did not come from the per-edge fetcher: %s", items[0])
+	}
+
+	// No per-edge bind for this edge → node-level fetcher.
+	reg.byEdge = nil
+	if _, err := Materialize(plan, []any{toyARow{id: "p1"}}, byteCtx(reg)); err != nil {
+		t.Fatalf("Materialize (fallback): %v", err)
+	}
+	if nodeCalls != 1 {
+		t.Errorf("node fetcher calls after fallback = %d, want 1", nodeCalls)
+	}
+}
+
+// countingReg counts node-level FetchByParents lookups that get CALLED.
+type countingReg struct {
+	Registry
+	onParents func()
+}
+
+func (r *countingReg) FetchByParents(res Resource) (FetchByParents, bool) {
+	inner, ok := r.Registry.FetchByParents(res)
+	if !ok {
+		return nil, false
+	}
+	return func(c *Ctx, ids []string, q EdgeQuery) (map[string]ParentRows, error) {
+		r.onParents()
+		return inner(c, ids, q)
+	}, true
 }
 
 // A guarded-out parent contributes NO id to the batch (guard-before-fetch).
@@ -770,6 +853,9 @@ var _ Registry = emptyReg{}
 
 func (emptyReg) FetchByIDs(Resource) (FetchByIDs, bool)         { return nil, false }
 func (emptyReg) FetchByParents(Resource) (FetchByParents, bool) { return nil, false }
+func (emptyReg) FetchByEdge(Resource, string) (FetchByParents, bool) {
+	return nil, false
+}
 
 // A reverse edge with at least one guard-passing parent and NO registered
 // fetcher is a wiring error, surfaced as such.
@@ -1625,6 +1711,10 @@ type extraRowsReg struct {
 }
 
 var _ Registry = (*extraRowsReg)(nil)
+
+func (r *extraRowsReg) FetchByEdge(p Resource, k string) (FetchByParents, bool) {
+	return r.inner.FetchByEdge(p, k)
+}
 
 func (r *extraRowsReg) FetchByIDs(res Resource) (FetchByIDs, bool) {
 	inner, ok := r.inner.FetchByIDs(res)

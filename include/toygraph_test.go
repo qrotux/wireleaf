@@ -104,6 +104,9 @@ type fakeReg struct {
 
 var _ Registry = (*fakeReg)(nil)
 
+// fakeReg has node-level fetchers only.
+func (f *fakeReg) FetchByEdge(Resource, string) (FetchByParents, bool) { return nil, false }
+
 func newFakeReg() *fakeReg {
 	return &fakeReg{
 		byID:     map[string]map[string]any{},

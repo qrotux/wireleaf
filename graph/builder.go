@@ -58,16 +58,32 @@ type nodeSpec struct {
 	envelope    include.Envelope
 	envelopeSet bool
 
-	edges []edgeDecl // ORDERED by declaration
+	// edges is ORDERED by declaration and APPEND-ONLY: a relation keeps the
+	// *edgeDecl it appended and writes its backref through it later, so
+	// nothing may reorder, filter or replace entries.
+	edges []*edgeDecl
 
 	fetchIDs     include.FetchByIDs     // boxed; nil until bound
 	fetchParents include.FetchByParents // boxed; nil until bound
+
+	// edgeFetch holds the reverse fetchers bound PER EDGE (FetchEdge, or a
+	// relation's FetchParents), keyed by this node's edge key. Compile checks
+	// each against the edge it names and copies it into the compiled node.
+	edgeFetch map[string]*edgeFetchBind
 
 	// set-flags let Compile distinguish "declared as empty/nil" from "not
 	// declared". The chained methods are typed by the handle's own Row/Wire
 	// parameters, so there are no recorded option types to cross-check — the
 	// Go compiler already rejected a closure typed on another node's Row.
 	slugSet, wireSet, primaryKeySet, enrichSet bool
+}
+
+// edgeFetchBind is one per-edge reverse fetcher as declared: the node the
+// caller typed the rows by (Compile checks it is the edge's target) and the
+// boxed fetcher.
+type edgeFetchBind struct {
+	target *nodeSpec
+	fn     include.FetchByParents
 }
 
 // edgeDecl is one declared edge: its include key, its kind discriminant and
@@ -77,6 +93,12 @@ type edgeDecl struct {
 	key  string
 	kind EdgeKind
 	set  *edgeSettings
+
+	// relation names the relation constructor that declared this edge
+	// ("OneToMany" / "ManyToMany"), "" for a plain Edge call. Compile uses it
+	// to report a relation's missing ForeignKey as ONE finding in the
+	// relation's own vocabulary instead of two desugared ones.
+	relation string
 }
 
 // NodeHandle is the typed façade over one nodeSpec — a chained configurator
@@ -210,7 +232,7 @@ func (h *NodeHandle[Row, W]) Envelope(e include.Envelope) *NodeHandle[Row, W] {
 func (h *NodeHandle[Row, Wire]) Edge(key string, kind EdgeKind) *EdgeBuilder[Row] {
 	h.b.mustLive()
 	set := &edgeSettings{}
-	h.spec.edges = append(h.spec.edges, edgeDecl{key: key, kind: kind, set: set})
+	h.spec.edges = append(h.spec.edges, &edgeDecl{key: key, kind: kind, set: set})
 	return &EdgeBuilder[Row]{b: h.b, set: set}
 }
 

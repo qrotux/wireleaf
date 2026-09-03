@@ -39,11 +39,53 @@ func FetchIDs[Row any, Wire any](b *Builder, h *NodeHandle[Row, Wire], fn func(c
 // fetcher (last wins); Compile does not reject it.
 func FetchParents[Row any, Wire any](b *Builder, h *NodeHandle[Row, Wire], fn FetchByParents[Row]) {
 	b.mustLive()
+	bindParents(h.spec, fn)
+}
+
+// FetchEdge binds the batched reverse fetcher of ONE reverse edge —
+// parent.<key>, which loads target rows keyed by parent id — rather than of
+// the target node as a whole. A reverse join belongs to the edge: when
+// several reverse edges land on one node (author.books and tag.tagged both
+// loading Book) each gets its own fetcher here, and none has to dispatch on
+// EdgeQuery.Edge. The engine asks for the edge's fetcher first and falls back
+// to the target's FetchParents.
+//
+// target is the node the edge points at; it is what types fn's rows, and
+// Compile reports a handle that is not the edge's actual target, a key that
+// names no edge on parent, and a key whose edge is not a reverse edge.
+// Re-binding the same edge is last-wins; binding nil clears the bind.
+func FetchEdge[PRow, PWire, Row, Wire any](
+	b *Builder, parent *NodeHandle[PRow, PWire], key string,
+	target *NodeHandle[Row, Wire], fn FetchByParents[Row],
+) {
+	b.mustLive()
+	bindEdge(parent.spec, key, target.spec, fn)
+}
+
+// bindEdge is the untyped half of FetchEdge, shared with the relations.
+func bindEdge[Row any](owner *nodeSpec, key string, target *nodeSpec, fn FetchByParents[Row]) {
 	if fn == nil {
-		h.spec.fetchParents = nil
+		delete(owner.edgeFetch, key)
 		return
 	}
-	h.spec.fetchParents = func(c *include.Ctx, parentIDs []string, q include.EdgeQuery) (map[string]include.ParentRows, error) {
+	if owner.edgeFetch == nil {
+		owner.edgeFetch = map[string]*edgeFetchBind{}
+	}
+	owner.edgeFetch[key] = &edgeFetchBind{target: target, fn: boxParents(fn)}
+}
+
+// bindParents is the untyped half of FetchParents.
+func bindParents[Row any](spec *nodeSpec, fn FetchByParents[Row]) {
+	if fn == nil {
+		spec.fetchParents = nil
+		return
+	}
+	spec.fetchParents = boxParents(fn)
+}
+
+// boxParents adapts a typed FetchByParents to the engine's []any form.
+func boxParents[Row any](fn FetchByParents[Row]) include.FetchByParents {
+	return func(c *include.Ctx, parentIDs []string, q include.EdgeQuery) (map[string]include.ParentRows, error) {
 		typed, err := fn(c, parentIDs, q)
 		if err != nil {
 			return nil, err

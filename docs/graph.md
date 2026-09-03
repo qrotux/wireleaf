@@ -21,6 +21,8 @@ reads to emit OpenAPI components (`WireSample`, `FieldVerdicts`,
 | `NodeHandle[Row, Wire]` | Typed façade over one declared node: chained configurator and the value you keep for edges, roots and fetcher binds. |
 | `EdgeKind` | Opaque discriminant of the five edge kinds; built only through `ToOne` / `ToMany` / `Reverse` / `InArray` / `Computed`. |
 | `EdgeBuilder[Row]` | Chained configurator returned by `NodeHandle.Edge`, typed by the parent's Row. |
+| `Spec[Row, Wire]`, `EdgeSpec[Row]` | The declarative (struct-literal) form of one node and its edges; `Add` registers a `Spec` and returns its `NodeHandle`. |
+| `OneToManyRelation`, `ManyToManyRelation` | Both directions of a link between two handles in one chained declaration (`OneToMany`, `ManyToMany`). |
 | `Graph` | Immutable result of `Compile`; implements `include.Registry`. |
 | `Finding`, `CompileError` | The compile-time error taxonomy. |
 | `Loader[K, V]` | Request-scoped batch loader for out-of-graph side data. |
@@ -207,6 +209,8 @@ edge reveals facts about the target row without loading it.
 func FetchIDs[Row, Wire any](b *Builder, h *NodeHandle[Row, Wire],
     fn func(c *include.Ctx, ids []string) ([]Row, error))
 func FetchParents[Row, Wire any](b *Builder, h *NodeHandle[Row, Wire], fn FetchByParents[Row])
+func FetchEdge[PRow, PWire, Row, Wire any](b *Builder, parent *NodeHandle[PRow, PWire], key string,
+    target *NodeHandle[Row, Wire], fn FetchByParents[Row])
 
 type FetchByParents[Row any] func(c *include.Ctx, parentIDs []string,
     q include.EdgeQuery) (map[string]ParentRows[Row], error)
@@ -232,6 +236,117 @@ concurrency safety) lives with the fetcher types in
 [include.md](include.md) (and, in short form, the README's "Key contracts")
 and is machine-checked by `loadertest` below.
 
+A reverse join belongs to the **edge**, not to the target node: `author.books`
+and `tag.tagged` both load `Book` rows, but by different keys. `FetchEdge`
+binds a reverse fetcher to one edge — `parent.<key>`, rows typed by `target`
+— and the engine asks for the edge's fetcher first (`Graph.FetchByEdge`,
+`include.Registry`'s third method), falling back to the target's
+`FetchParents` for an edge without one. A node-level `FetchParents` shared
+by several inbound reverse edges can still tell them apart by
+`EdgeQuery.Edge`. `FetchEdge` findings: a key naming no edge on `parent`, an
+edge that is not reverse, a `target` handle that is not the edge's target
+(such a bind does not count as the edge's fetcher). A relation's
+`FetchParents` is `FetchEdge` on its reverse edge.
+
+## Declarative nodes: `Spec` and `Add`
+
+```go
+type Spec[Row, Wire any] struct {
+    Name, Slug   string
+    Wire         func(Row, *include.Ctx) Wire
+    PrimaryKey   func(Row) string
+    Enrich       func([]Row, *include.Ctx) error
+    Defaults     []string
+    DocExternal  bool
+    Envelope     *include.Envelope
+    Edges        []EdgeSpec[Row]
+    FetchIDs     func(c *include.Ctx, ids []string) ([]Row, error)
+    FetchParents FetchByParents[Row]
+}
+type EdgeSpec[Row any] struct {
+    Key  string
+    Kind EdgeKind
+    ForeignKey  func(Row) string
+    ForeignKeys func(Row) []string
+    Guard       func(*include.Ctx, Row) bool
+    Inverse     string
+    Required, Includable, Filterable, Bare bool
+    Limit, EstimatedRows       int
+    Envelope *include.Envelope
+    Sort     string
+    Args     []EdgeArgOpt
+    Policies []include.EdgePolicy
+}
+func Add[Row, Wire any](b *Builder, s Spec[Row, Wire]) *NodeHandle[Row, Wire]
+```
+
+`Spec` is the chained API as a struct literal, so a node's facts, edges and
+fetchers can sit next to its wire type — one file per node. `Add` replays the
+literal through `Node`, `Edge`, `FetchIDs` and `FetchParents` and returns the
+same `*NodeHandle` a chained `Node` call returns, so `Root`, further chained
+edges, relations and the bind functions all still apply, and the two forms mix
+freely on one builder. Nothing validates in `Add` either.
+
+A zero field is "not declared", exactly as if the chained method had never
+been called: a nil closure is not bound (`Compile` reports the mandatory ones
+as missing — `Wire is required`, never `Wire(nil)`), `Limit: 0` leaves the
+default top-N in place, `Slug: ""` lets `Compile` derive it. The two
+`Envelope` fields are pointers because a declared *zero* envelope (plain)
+overrides a non-plain graph default and so cannot be the zero value. Edges
+are registered in slice order.
+
+## Relations: `OneToMany` and `ManyToMany`
+
+```go
+func OneToMany[OneRow, OneWire, ManyRow, ManyWire any](
+    one *NodeHandle[OneRow, OneWire], many *NodeHandle[ManyRow, ManyWire],
+    manyKey, oneKey string) *OneToManyRelation[OneRow, ManyRow]
+func ManyToMany[LeftRow, LeftWire, RightRow, RightWire any](
+    left *NodeHandle[LeftRow, LeftWire], right *NodeHandle[RightRow, RightWire],
+    leftKey, rightKey string) *ManyToManyRelation[LeftRow, RightRow]
+```
+
+A relation declares **both directions** of a link in one place, for the
+assembly package that imports every domain package and links their handles.
+Targets and Row types are inferred from the handles, so a relation names no
+wire type and a wrong handle does not build. Each one is sugar over
+`NodeHandle.Edge`: `Compile` sees two ordinary edges, paired by `Inverse`
+automatically, and validates them as such.
+
+- **`OneToMany(one, many, manyKey, oneKey)`** writes `many.<oneKey>` as
+  `ToOne[OneWire]` and `one.<manyKey>` as `Reverse[ManyWire]`.
+  `ForeignKey(field, fn)` is mandatory and declares the many-side foreign key
+  by name and by reader in one call: `fn` is the to-one edge's `ForeignKey`,
+  `field` ("authorId") becomes the reverse edge's backref — the discriminant
+  that makes it a reverse edge (`Compile` requires it non-empty; no fetcher
+  reads it, and it is not a column binding). Omitting the call is one
+  finding on the to-one edge (`OneToMany relation declares no
+  ForeignKey(field, fn)`); an empty `field` is one finding on the reverse
+  edge.
+  `ForeignKey`, `Required` and `Policies` go to the to-one edge; `Limit`,
+  `Sort`, `Args`, `Bare` and `EstimatedRows` to the reverse edge; `Includable`,
+  `Filterable` and `Envelope` to both. `One(func(*EdgeBuilder[ManyRow]))` and
+  `Many(func(*EdgeBuilder[OneRow]))` expose each side's full builder (Guard
+  lives there). `FetchParents` binds the reverse fetcher of **this** edge
+  (`FetchEdge` on `one.<manyKey>`, rows typed by the many-side Row), so the
+  "how do I load an author's books" fact sits next to the link and other
+  reverse edges into the many-side node keep their own.
+- **`ManyToMany(left, right, leftKey, rightKey)`**, where **left holds the id
+  list**, writes `left.<leftKey>` as `ToMany[RightWire]` and
+  `right.<rightKey>` as `Reverse[LeftWire]`. `ForeignKeys(field, fn)` is
+  mandatory and mirrors `ForeignKey` above: `fn` reads the id list,
+  `field` ("tagIds") is the reverse edge's backref. `ForeignKeys` and
+  `Policies` go to the forward edge; `Includable`, `Filterable`, `Envelope`
+  and `Limit` to both; `Left`/`Right` expose the builders (`Sort`/`Args` are
+  `Right`-side); `FetchParents` binds the reverse fetcher of
+  `right.<rightKey>` (rows typed by the left Row).
+
+Relations, `Spec.Edges` and chained `Edge` calls all append to the same
+per-node edge list, so a domain package that owns several nodes may declare
+the edges between them itself while the assembly package adds only the
+cross-domain links. Every relation method panics after `Compile` like the rest
+of the builder.
+
 ## Compile
 
 ```go
@@ -247,8 +362,8 @@ duplicate wire types), per-node shape and closures, per-edge target
 resolution and kind ↔ option coherence, inverse pairing, default-edge cycle
 detection, and reachability-driven fetcher completeness (walking includable ∪
 default edges from the roots: a node reached by a forward edge needs
-`FetchIDs`, by a reverse edge `FetchParents`; roots themselves need neither —
-the handler seeds them).
+`FetchIDs`, by a reverse edge `FetchParents` unless that edge has its own
+`FetchEdge` bind; roots themselves need neither — the handler seeds them).
 
 Error taxonomy:
 
@@ -304,6 +419,7 @@ canonical reflector, applying the same policy.
 ```go
 func (g *Graph) FetchByIDs(res include.Resource) (include.FetchByIDs, bool)
 func (g *Graph) FetchByParents(res include.Resource) (include.FetchByParents, bool)
+func (g *Graph) FetchByEdge(parent include.Resource, key string) (include.FetchByParents, bool)
 ```
 
 `*Graph` satisfies `include.Registry`: the engine looks fetchers up by

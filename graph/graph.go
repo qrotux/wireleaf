@@ -39,6 +39,7 @@ type compiledNode struct {
 
 	fetchIDs     include.FetchByIDs
 	fetchParents include.FetchByParents
+	edgeFetch    map[string]include.FetchByParents // per-edge reverse fetchers, by edge key
 }
 
 // Compile-time assertion that a compiled node is an include.Resource.
@@ -210,4 +211,16 @@ func (g *Graph) FetchByParents(res include.Resource) (include.FetchByParents, bo
 		return nil, false
 	}
 	return n.fetchParents, true
+}
+
+// FetchByEdge returns the reverse fetcher bound to the edge parent.<key>
+// (FetchEdge, or a relation's FetchParents), if any. The engine asks here
+// before FetchByParents(target).
+func (g *Graph) FetchByEdge(parent include.Resource, key string) (include.FetchByParents, bool) {
+	n, ok := g.byName[parent.Name()]
+	if !ok {
+		return nil, false
+	}
+	fn, ok := n.edgeFetch[key]
+	return fn, ok
 }

@@ -470,6 +470,7 @@ func resolveReverse(child *PlanNode, parent *PlanNode, docs []any, ctx *Ctx) ([]
 		Limit: resolvedLimit(child, defaultReverseLimit),
 		Sort:  reverseSortKey(child),
 		Args:  edgeQueryArgs(child),
+		Edge:  EdgeRef{Parent: parent.Resource.Name(), Key: child.EdgeKey},
 	}
 
 	// Guard first: per-doc parent id ("" = guarded-out → empty node), plus the
@@ -495,9 +496,9 @@ func resolveReverse(child *PlanNode, parent *PlanNode, docs []any, ctx *Ctx) ([]
 	strictContract := ctx.Policies.FetcherContract == FetcherContractStrict
 	byParent := map[string]ParentRows{}
 	if len(parentIDs) > 0 {
-		fetch, ok := ctx.Registry.FetchByParents(child.Resource)
+		fetch, ok := reverseFetcher(ctx.Registry, parent.Resource, child.EdgeKey, child.Resource)
 		if !ok {
-			return nil, fmt.Errorf("include: no FetchByParents registered for %s (edge %s)", child.Resource.Name(), child.EdgeKey)
+			return nil, fmt.Errorf("include: no FetchByParents registered for edge %s (neither on the edge nor on node %s)", q.Edge, child.Resource.Name())
 		}
 		got, err := fetch(ctx, parentIDs, q)
 		if err != nil {

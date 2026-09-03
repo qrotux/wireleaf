@@ -12,6 +12,15 @@ type Registry interface {
 	// FetchByParents returns the batched multi-parent reverse fetcher for r, if
 	// one is registered.
 	FetchByParents(r Resource) (FetchByParents, bool)
+	// FetchByEdge returns the reverse fetcher bound to the edge parent.<key>,
+	// if one is registered. A reverse join belongs to the edge, not to the
+	// target node — author.books and tag.tagged both load Book rows but by
+	// different keys — so the engine asks here first and falls back to
+	// FetchByParents(target) for an edge with no fetcher of its own. A
+	// registry with node-level fetchers only returns (nil, false). A registry
+	// that WRAPS another must forward this method too: a graph whose reverse
+	// edges are bound per edge has no node-level fetcher to fall back to.
+	FetchByEdge(parent Resource, key string) (FetchByParents, bool)
 }
 
 // EdgeQuery carries the resolved per-edge query handed to a batched reverse
@@ -40,6 +49,33 @@ type EdgeQuery struct {
 	// they are already resolved into Limit/Sort. nil when nothing remains.
 	// The values are shared with the plan — fetchers must not mutate them.
 	Args map[string]any
+
+	// Edge identifies the reverse edge being loaded: the OWNER node (whose
+	// ids parentIDs holds) and the include key. A fetcher bound per edge
+	// (EdgeFetchRegistry) already knows which edge it serves and may ignore
+	// it; a NODE-level fetcher shared by several inbound reverse edges
+	// (author.books and tag.tagged both landing on Book) switches on it to
+	// pick the join. Zero only on a hand-built query (e.g. a test harness).
+	Edge EdgeRef
+}
+
+// EdgeRef names one edge: the resource that declares it and its include key.
+type EdgeRef struct {
+	Parent string // owner resource name, e.g. "Author"
+	Key    string // include key on that owner, e.g. "books"
+}
+
+// String renders "Parent.key".
+func (r EdgeRef) String() string { return r.Parent + "." + r.Key }
+
+// reverseFetcher resolves the fetcher for the reverse edge parent.<key> into
+// target: the per-edge bind when the registry has one, else the target's
+// node-level fetcher. A registry answering (nil, true) is treated as "none".
+func reverseFetcher(reg Registry, parent Resource, key string, target Resource) (FetchByParents, bool) {
+	if fn, ok := reg.FetchByEdge(parent, key); ok && fn != nil {
+		return fn, true
+	}
+	return reg.FetchByParents(target)
 }
 
 // ParentRows is one parent's slice of a batched reverse fetch result.

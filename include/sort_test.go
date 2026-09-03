@@ -45,6 +45,9 @@ type sortSpyReg struct {
 var _ Registry = (*sortSpyReg)(nil)
 
 func (s *sortSpyReg) FetchByIDs(r Resource) (FetchByIDs, bool) { return s.inner.FetchByIDs(r) }
+func (s *sortSpyReg) FetchByEdge(p Resource, k string) (FetchByParents, bool) {
+	return s.inner.FetchByEdge(p, k)
+}
 
 func (s *sortSpyReg) FetchByParents(r Resource) (FetchByParents, bool) {
 	inner, ok := s.inner.FetchByParents(r)

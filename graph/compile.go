@@ -2,6 +2,7 @@ package graph
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -66,11 +67,16 @@ func (l *findingList) add(node, edge, format string, args ...any) {
 // options plus the resolved kind/target, kept so the inverse, default-cycle
 // and reachability passes can read edges without re-applying options.
 type edgeBuild struct {
-	owner  *nodeSpec
-	key    string
-	kind   include.EdgeKindType
-	target *nodeSpec
-	set    edgeSettings
+	owner *nodeSpec
+	decl  *edgeDecl
+	key   string
+	kind  include.EdgeKindType
+	// skipped marks an edge declared without a Kind: it stays visible to the
+	// cross-reference passes (Defaults, Inverse, duplicate keys) so they do
+	// not report it as unknown, but nothing else is built or checked for it.
+	skipped bool
+	target  *nodeSpec
+	set     edgeSettings
 }
 
 // Compile validates every declaration and freezes the builder. It is the ONLY
@@ -158,8 +164,20 @@ func (b *Builder) Compile() (*Graph, error) {
 		}
 		seen := make(map[string]*edgeBuild, len(n.edges))
 		for _, decl := range n.edges {
+			// The two omissions a struct-literal EdgeSpec makes easy: no Key,
+			// no Kind. Each is one finding here, not a cascade of confusing
+			// ones from the kind/setting matrix below.
+			if decl.key == "" {
+				fs.add(n.name, "", "edge key must not be empty")
+				continue
+			}
 			if _, dup := seen[decl.key]; dup {
 				fs.add(n.name, decl.key, "duplicate edge key")
+				continue
+			}
+			if decl.kind.kind == "" {
+				fs.add(n.name, decl.key, "edge declares no Kind (use ToOne, ToMany, Reverse, InArray or Computed)")
+				seen[decl.key] = &edgeBuild{owner: n, decl: decl, key: decl.key, set: *decl.set, skipped: true}
 				continue
 			}
 			if needsJSONEscape(decl.key) {
@@ -170,6 +188,7 @@ func (b *Builder) Compile() (*Graph, error) {
 			}
 			eb := &edgeBuild{
 				owner: n,
+				decl:  decl,
 				key:   decl.key,
 				kind:  decl.kind.kind,
 				set:   *decl.set,
@@ -198,6 +217,30 @@ func (b *Builder) Compile() (*Graph, error) {
 			cn.edges[decl.key] = edge
 		}
 		edgesByNode[n] = seen
+
+		// Per-edge reverse fetchers: each must name a reverse edge of this
+		// node and be typed by that edge's target.
+		for _, key := range slices.Sorted(maps.Keys(n.edgeFetch)) {
+			bind := n.edgeFetch[key]
+			eb, ok := seen[key]
+			switch {
+			case !ok:
+				fs.add(n.name, key, "FetchEdge: no such edge")
+				continue
+			case eb.skipped:
+				continue // the missing Kind is already reported
+			case eb.kind != include.KindReverse:
+				fs.add(n.name, key, "FetchEdge is only valid on reverse edges (this is %s)", eb.kind)
+				continue
+			case eb.target != nil && eb.target != bind.target:
+				fs.add(n.name, key, "FetchEdge target node %s is not the edge's target %s", bind.target.name, eb.target.name)
+				continue
+			}
+			if cn.edgeFetch == nil {
+				cn.edgeFetch = map[string]include.FetchByParents{}
+			}
+			cn.edgeFetch[key] = bind.fn
+		}
 
 		inDefaults := make(map[string]bool, len(n.defaults))
 		for _, key := range n.defaults {
@@ -274,6 +317,7 @@ func (b *Builder) Compile() (*Graph, error) {
 	for _, n := range b.nodes {
 		for _, eb := range edgeOrder[n] {
 			checkInverse(&fs, eb, edgesByNode)
+			checkRelationBackref(&fs, eb, edgesByNode)
 		}
 	}
 
@@ -281,7 +325,7 @@ func (b *Builder) Compile() (*Graph, error) {
 	checkDefaultCycles(&fs, b.nodes, edgesByNode)
 
 	// --- pass F: reachability + fetcher completeness ------------------------
-	checkFetchers(&fs, b, edgeOrder)
+	checkFetchers(&fs, b, edgeOrder, compiled)
 
 	if len(fs) > 0 {
 		return nil, &CompileError{Findings: fs}
@@ -377,7 +421,7 @@ func needsJSONEscape(s string) bool {
 func buildEdge(
 	fs *findingList,
 	owner *nodeSpec,
-	decl edgeDecl,
+	decl *edgeDecl,
 	eb *edgeBuild,
 	compiled map[*nodeSpec]*compiledNode,
 	graphEnv include.Envelope,
@@ -406,11 +450,23 @@ func buildEdge(
 	// --- kind ↔ option coherence -------------------------------------------
 	switch k.kind {
 	case include.KindToOne:
-		requireForeignKey(fs, name, key, s, "to-one")
+		if decl.relation != "" && !s.foreignKeySet {
+			fs.add(name, key, "%s relation declares no ForeignKey(field, fn)", decl.relation)
+		} else {
+			requireForeignKey(fs, name, key, s, "to-one")
+		}
 	case include.KindForwardHasMany:
-		requireForeignKeys(fs, name, key, s, "forward-hasMany")
+		if decl.relation != "" && !s.foreignKeysSet {
+			fs.add(name, key, "%s relation declares no ForeignKeys(field, fn)", decl.relation)
+		} else {
+			requireForeignKeys(fs, name, key, s, "forward-hasMany")
+		}
 	case include.KindReverse:
-		if k.backref == "" {
+		// A relation's reverse edge gets its backref from the FK side's
+		// ForeignKey(field, fn): a missing call is reported THERE, in the
+		// relation's vocabulary; only an explicitly empty field is this
+		// edge's own finding (checkRelationBackref, once the FK side is known).
+		if k.backref == "" && decl.relation == "" {
 			fs.add(name, key, "reverse edge requires a backref")
 		}
 	case include.KindInArray:
@@ -701,6 +757,25 @@ func isForward(k include.EdgeKindType) bool {
 	return k == include.KindToOne || k == include.KindForwardHasMany || k == include.KindInArray
 }
 
+// checkRelationBackref reports a relation's reverse edge whose backref is
+// empty although the FK side DID call ForeignKey(field, fn): the field was
+// "". A missing call is the FK side's own finding (buildEdge), so this never
+// doubles it.
+func checkRelationBackref(fs *findingList, eb *edgeBuild, edgesByNode map[*nodeSpec]map[string]*edgeBuild) {
+	if eb.decl.relation == "" || eb.kind != include.KindReverse || eb.decl.kind.backref != "" || eb.target == nil {
+		return
+	}
+	fk, ok := edgesByNode[eb.target][eb.set.inverse]
+	if !ok || (!fk.set.foreignKeySet && !fk.set.foreignKeysSet) {
+		return
+	}
+	method := "ForeignKey"
+	if eb.decl.relation == "ManyToMany" {
+		method = "ForeignKeys"
+	}
+	fs.add(eb.owner.name, eb.key, "%s relation: %s field must not be empty", eb.decl.relation, method)
+}
+
 // checkInverse validates one Inverse declaration: the named edge must exist on
 // the target, point back at this node, run the opposite direction, and — when
 // it declares an Inverse of its own — name this very edge.
@@ -716,6 +791,9 @@ func checkInverse(fs *findingList, eb *edgeBuild, edgesByNode map[*nodeSpec]map[
 	if !ok {
 		fs.add(name, key, "inverse: no edge %q on node %s", eb.set.inverse, eb.target.name)
 		return
+	}
+	if inv.skipped {
+		return // its missing Kind is already reported; nothing to pair against
 	}
 	if inv.target != eb.owner {
 		tgt := "<none>"
@@ -790,7 +868,7 @@ func checkDefaultCycles(fs *findingList, nodes []*nodeSpec, edgesByNode map[*nod
 // in scope because the engine materializes Defaults() ∪ client keys at every
 // level regardless of Includable — a non-includable default edge still fetches
 // at runtime, so its target's bind is just as mandatory.
-func checkFetchers(fs *findingList, b *Builder, edgeOrder map[*nodeSpec][]*edgeBuild) {
+func checkFetchers(fs *findingList, b *Builder, edgeOrder map[*nodeSpec][]*edgeBuild, compiled map[*nodeSpec]*compiledNode) {
 	visited := make(map[*nodeSpec]bool, len(b.nodes))
 	queue := make([]*nodeSpec, 0, len(b.roots))
 	for _, r := range b.roots {
@@ -819,7 +897,13 @@ func checkFetchers(fs *findingList, b *Builder, edgeOrder map[*nodeSpec][]*edgeB
 			}
 			via := n.name + "." + eb.key
 			if eb.kind == include.KindReverse {
-				needParents[eb.target] = append(needParents[eb.target], via)
+				// A VALID per-edge fetcher (FetchEdge / relation
+				// FetchParents; pass C dropped the rejected ones) serves
+				// this edge on its own; only an edge without one needs the
+				// target's node-level bind.
+				if cn := compiled[n]; cn == nil || cn.edgeFetch[eb.key] == nil {
+					needParents[eb.target] = append(needParents[eb.target], via)
+				}
 			} else {
 				needIDs[eb.target] = append(needIDs[eb.target], via)
 			}
@@ -835,7 +919,7 @@ func checkFetchers(fs *findingList, b *Builder, edgeOrder map[*nodeSpec][]*edgeB
 			fs.add(n.name, "", "missing FetchIDs bind: reached by forward includable/default edge(s) %s", strings.Join(via, ", "))
 		}
 		if via := needParents[n]; len(via) > 0 && n.fetchParents == nil {
-			fs.add(n.name, "", "missing FetchParents bind: reached by reverse includable/default edge(s) %s", strings.Join(via, ", "))
+			fs.add(n.name, "", "missing FetchParents bind: reached by reverse includable/default edge(s) %s (bind the node, or each edge with FetchEdge / a relation's FetchParents)", strings.Join(via, ", "))
 		}
 	}
 }
