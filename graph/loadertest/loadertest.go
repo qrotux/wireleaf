@@ -2,7 +2,7 @@
 //
 // A fetcher is application code the engine calls with a batch of keys, so its
 // bugs surface as wrong pages rather than as compile errors. This package
-// turns the normative fetcher contract (spec §2) into runnable subtests an
+// turns the normative fetcher contract into runnable subtests an
 // application adds to its own test suite:
 //
 //	func TestPostsByAuthor(t *testing.T) {

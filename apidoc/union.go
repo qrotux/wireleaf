@@ -81,9 +81,6 @@ func variantSchema(r Reflector, t reflect.Type) (Schema, error) {
 	if err != nil {
 		return Schema{}, fmt.Errorf("apidoc: union variant %s: %w", name, err)
 	}
-	// The reflector seam hands back typed IR (Task 13), so there is nothing to
-	// parse here any more: the strict fragment conversion an implementation once
-	// needed now lives inside the adapter's reflector.
 	top, ok := out[name]
 	if !ok || top == nil {
 		return Schema{}, fmt.Errorf("apidoc: union variant %s: reflector emitted no top component", name)

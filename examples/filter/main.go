@@ -300,17 +300,14 @@ func (r *renderer) hops(c include.ResolvedCond, hops []include.FilterHop, sc *sc
 	key := path + "." + h.Key
 
 	if h.Quant == "" {
-		// To-one: one row, nothing to quantify; two conditions through the
-		// same hop in the same scope share the join. In the OUTER FROM the
-		// join must be a LEFT JOIN: an inner one would drop a root row whose
-		// FK is null or dangling even when another OR branch holds for it.
-		// With the LEFT JOIN, a missing target makes the leaf NULL — not
-		// true — under AND / OR, and a root whose to-one target is missing
-		// falls through to vacuous truth under `all`, because the correlated
-		// body of the EXISTS below it is then empty: the empty-relation
-		// reading. Inside an EXISTS body a plain JOIN is right: a child that
-		// fails to join is neither a match nor a violation, exactly as the
-		// doc says.
+		// To-one: one row, nothing to quantify, and two conditions through the
+		// same hop in the same scope share the join. The OUTER FROM needs a
+		// LEFT JOIN — an inner one would drop a root row whose FK is null or
+		// dangling even when another OR branch holds for it, and with the LEFT
+		// JOIN a missing target makes the leaf NULL rather than true, so under
+		// `all` the root falls through to vacuous truth on an empty correlated
+		// body. Inside an EXISTS body a plain JOIN is right: a child that fails
+		// to join is neither a match nor a violation.
 		kw := "JOIN"
 		if sc.outer {
 			kw = "LEFT JOIN"

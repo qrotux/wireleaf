@@ -99,9 +99,8 @@ type ParentRows struct {
 // absent from the map has no children (an empty collection, never null); keys
 // that were not requested are dropped by the engine.
 //
-// Implementations MUST be safe for concurrent use: the engine may call the
-// same fetcher from several goroutines for sibling edges (the v1 engine still
-// loads sibling edges sequentially, but the contract is concurrency-safe).
+// Implementations MUST be safe for concurrent use: the contract lets the
+// engine call the same fetcher from several goroutines for sibling edges.
 type FetchByParents func(c *Ctx, parentIDs []string, q EdgeQuery) (map[string]ParentRows, error)
 
 // MarshalFunc serializes one wire value into JSON bytes.
@@ -128,26 +127,17 @@ type Request struct {
 // Ctx is the per-request context threaded through every engine call.
 //
 // One Ctx is shared by every fetcher of a request and MUST be treated as
-// read-only by them: the engine never mutates it after construction, and
-// fetchers may be invoked concurrently. Anything a fetcher needs to write per
-// request belongs behind its own synchronization in Env.
+// read-only by them: fetchers may run concurrently, and anything they write
+// per request belongs behind their own synchronization in Env. Three
+// sanctioned exceptions:
 //
-// The one sanctioned exception is the request-scoped state reached through
-// State: it is unexported, mutex-protected and concurrent-safe by
-// construction, so library plumbing in other packages (the loader package's
-// per-request cache) can keep per-request state without any
-// application-visible mutation of Ctx. The zero Ctx value is usable — the map
-// initializes lazily under the mutex.
-//
-// The second exception is the row counter behind Rows: Materialize
-// increments it (single-threaded, no lock) as levels are serialized, so the
-// application can read the real cost of a request after hydration.
-//
-// The third is Registry: a Hydrator method given a Ctx whose Registry is nil
-// writes its own registry there, once, before any fetcher runs. That write is
-// unsynchronized, so a Ctx handed to several Hydrators — or to one from
-// several goroutines — must carry its Registry already; the fill-in is for
-// the one-Hydrator-per-request caller who builds &Ctx{Context: ctx}.
+//   - State: mutex-protected request-scoped slots for library plumbing (the
+//     loader package's per-request cache); the zero Ctx works, the map
+//     initializes lazily.
+//   - the row counter behind Rows, incremented single-threaded by Materialize.
+//   - Registry: a Hydrator given a nil Registry writes its own there once,
+//     unsynchronized, before any fetcher runs — a Ctx shared by several
+//     Hydrators or goroutines must carry its Registry already.
 //
 // Ctx contains a mutex: always pass *Ctx, never copy it by value.
 type Ctx struct {
@@ -164,14 +154,9 @@ type Ctx struct {
 	// closures installed by graph.Serialize and graph.Enrich, Edge.Guard and
 	// fetchers assert it to the application's own type.
 	Env any
-	// Marshal serializes wire values; nil → MarshalNoEscape, i.e. raw `&`,
-	// `<`, `>` (JSON.stringify-parity bytes) WITHOUT any opt-in. Install
-	// MarshalStd to get encoding/json's HTML escaping back.
-	//
-	// SECURITY: the default output is for application/json response bodies.
-	// It is NOT safe to embed in HTML (an SSR <script> bootstrap, a mail
-	// template) — a string value containing `</script>` would terminate the
-	// script context. Escape at the embedding site, or install MarshalStd.
+	// Marshal serializes wire values; nil means MarshalNoEscape (raw `&`,
+	// `<`, `>`, not safe to embed in HTML — see its doc). Install MarshalStd
+	// to get encoding/json's HTML escaping back.
 	Marshal MarshalFunc
 	// Policies is the engine-wide materialize-time policy fallback set
 	// (missing-required, missing-foreign, fetcher-contract). The zero value
@@ -246,11 +231,9 @@ func (c *Ctx) State(key any, mk func() any) any {
 // StdContext returns the request Go context, falling back to
 // context.Background().
 //
-// It has NO caller inside wireleaf — it is EXTERNAL API, and deliberately so.
-// Fetchers, MapFns and EnrichFns live in the application, receive only a *Ctx,
-// and need a context.Context to reach the database and to honor cancellation
-// (loader.Loader's fetch contract names this method for exactly that). Do not
-// remove it as unused.
+// It has NO caller inside wireleaf and must stay: application fetchers, MapFns
+// and EnrichFns receive only a *Ctx and need a context.Context for the database
+// and for cancellation (loader.Loader's fetch contract names this method).
 func (c *Ctx) StdContext() context.Context {
 	if c.Context != nil {
 		return c.Context

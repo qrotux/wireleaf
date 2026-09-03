@@ -1,5 +1,5 @@
 // Package reflectortest is the executable specification of the wireleaf
-// reflector contract (spec §7).
+// reflector contract.
 //
 // A reflector turns Go wire structs into typed IR components
 // (apidoc.Reflector). Everything downstream — components assembly, $ref
@@ -245,8 +245,8 @@ func checkNullability(got map[string]*apidoc.IRNode) []string {
 	return v
 }
 
-// checkBytesParity pins spec §5a's "bytes agree with the document" claim on
-// REAL encoding/json output, not on the policy's word alone: a zero-valued
+// checkBytesParity pins the "bytes agree with the document" claim on REAL
+// encoding/json output, not on the policy's word alone: a zero-valued
 // Nullability is marshaled, and every field's presence/null in those bytes
 // must agree BOTH with apidoc.DefaultNullability's verdict AND with the
 // reflected document's required set. If encoding/json ever changes the rule

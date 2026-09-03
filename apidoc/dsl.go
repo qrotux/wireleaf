@@ -51,9 +51,8 @@ func (s Schema) mustProp(key string) *Prop {
 
 // Required REPLACES the required set with exactly keys. Every key must exist.
 //
-// DRIFT from v0: the emitted `required` list follows PROPERTY order, not the
-// caller's argument order — the IR derives the list from the Prop.Required
-// flags. The SET of required keys is unchanged.
+// The emitted `required` list follows PROPERTY order, not the caller's argument
+// order — the IR derives the list from the Prop.Required flags.
 func (s Schema) Required(keys ...string) Schema {
 	props := make([]*Prop, 0, len(keys))
 	for _, k := range keys {
@@ -96,9 +95,8 @@ func (s Schema) Optional(keys ...string) Schema {
 
 // RequiredAll marks every current property required.
 //
-// DRIFT from v0: the emitted list follows Props order rather than being sorted.
-// For a RawFragment-built object the two coincide (properties are ordered by
-// sorted key); for a reflected object it follows field order.
+// The emitted list follows Props order: for a RawFragment-built object that is
+// sorted key order, for a reflected object it is field order.
 func (s Schema) RequiredAll() Schema {
 	n := s.object()
 	for i := range n.Props {
@@ -122,9 +120,9 @@ func (s Schema) Nullable(keys ...string) Schema {
 		p := s.mustProp(k)
 		if p.Schema.Kind == KindOpaque {
 			// irNullable cannot transform bytes it does not understand, and a
-			// silent no-op is exactly what this DSL must never do. Wrap instead
-			// (v0 did the same); the result is a combinator, so a second call is
-			// idempotent through the normal path.
+			// silent no-op is exactly what this DSL must never do. Wrap instead;
+			// the result is a combinator, so a second call is idempotent through
+			// the normal path.
 			p.Schema = AnyOfNull(Schema{n: p.Schema}).n
 			continue
 		}
@@ -234,8 +232,8 @@ func (s Schema) filterProps(keep func(string) bool) {
 // "properties.<name>" naming a NEW property upserts it — the value may be a
 // fragment map or a Schema, whose IR node is spliced in directly.
 //
-// Every failure panics, matching v0's declaration-time contract: an unresolvable
-// path, a mistyped value, or a standard keyword outside the IR's typed set.
+// Every failure panics at declaration time: an unresolvable path, a mistyped
+// value, or a standard keyword outside the IR's typed set.
 func (s Schema) Set(path string, v any) Schema {
 	segs := strings.Split(path, ".")
 	if s.n == nil {

@@ -3,7 +3,7 @@ package apidoc
 // edgeshape.go — the IR builders for an includable edge's VALUE schema.
 //
 // One place owns the edge shapes so the static component (emit.go) and the
-// include-aware recompute (schemafor.go, Task 14) cannot drift:
+// include-aware recompute (schemafor.go) cannot drift:
 //
 //	to-one   → anyOf[ $ref, null ]   (Edge.Required → a BARE $ref, no null arm)
 //	bare     → anyOf[ array<$ref>, null ]
@@ -84,7 +84,7 @@ func edgeShape(e include.Edge, target *IRNode) *IRNode {
 }
 
 // wrappedEdgeShape is the second half of the shape table — the value schema
-// of an edge whose include.Edge.Envelope is not plain (spec §5):
+// of an edge whose include.Edge.Envelope is not plain:
 //
 //	to-one   → { <Key>: anyOf[$ref, null] }          (Required → { <Key>: $ref })
 //	to-many  → { <Key>: array<{ <Key>: $ref }>, <Pagination>: {hasNextPage, nextCursor?} }

@@ -5,12 +5,10 @@ package huma
 //
 // WHERE IT RUNS. The derivation is part of the BRIDGE's Schema(): huma asks the
 // registry for the schema of an operation's body type, so the convention has to
-// answer there. There is no post-registration doc pass (the v0 prototype's
-// successFragment ran after huma.Register and patched the document); inversion
-// means the envelope IS the component huma was handed.
+// answer there. There is no post-registration doc pass — the envelope IS the
+// component huma was handed.
 //
-// THE CONVENTION (port of platform-go's successFragment). A body struct
-// qualifies when:
+// THE CONVENTION. A body struct qualifies when:
 //
 //	field 0 is json:"data" AND its type is a registered node wrapper (or a slice
 //	of one, or a type providing its own EnvelopeSchema), and either
@@ -37,9 +35,8 @@ import (
 // library components
 // ---------------------------------------------------------------------------
 
-// CursorPagination is the cursor page block. The wire shape is verbatim the
-// platform-go contract (httpx/envelope.go): nullable cursors, boolean flags, an
-// int limit.
+// CursorPagination is the cursor page block: nullable cursors, boolean flags,
+// an int limit.
 type CursorPagination struct {
 	NextCursor  *string `json:"nextCursor"`
 	PrevCursor  *string `json:"prevCursor"`
@@ -125,6 +122,10 @@ func errorFragment() map[string]any {
 	}
 }
 
+// libraryComponents are the names registerLibraryComponents owns; New refuses
+// a graph node that would take one of them.
+var libraryComponents = []string{CursorPaginationComponent, CursorPaginationTotalComponent, PagePaginationComponent, ErrorComponent}
+
 // registerLibraryComponents installs the pagination blocks and the Error
 // component on c. NewConfig calls it at wiring time, because a derived envelope
 // $refs a pagination component and Errors() $refs Error — a document that uses
@@ -135,10 +136,6 @@ func errorFragment() map[string]any {
 // an ERROR for a conflicting one (an application component squatting the name).
 // The pagination components are bound to their Go wire types so the bridge can
 // serve them typed; Error has no wire type and is served as one opaque fragment.
-// libraryComponents are the names registerLibraryComponents owns; New refuses
-// a graph node that would take one of them.
-var libraryComponents = []string{CursorPaginationComponent, CursorPaginationTotalComponent, PagePaginationComponent, ErrorComponent}
-
 func registerLibraryComponents(c *apidoc.Components) {
 	install := func(name string, frag map[string]any, t reflect.Type) {
 		if err := c.RegisterReflected(name, apidoc.RawFragment(frag).IR(), t); err != nil {

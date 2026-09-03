@@ -1,6 +1,6 @@
 package huma
 
-// equivalence_test.go — spec §7: the validation-equivalence suite.
+// equivalence_test.go — the validation-equivalence suite.
 //
 // THE ONE HARD INVARIANT. For every typed validation field of the IR, an
 // instance is accepted or rejected IDENTICALLY by
@@ -9,7 +9,7 @@ package huma
 //	    OpenAPI document, compiled by a real draft-2020-12 validator
 //	    (apidoc/crosscheck, with format and content assertions ON), and
 //	(b) the RUNTIME side — the same component run through the IR→huma converter
-//	    (toHuma, Task 18) and validated by huma's own request validator.
+//	    (toHuma) and validated by huma's own request validator.
 //
 // A divergence is a BUG in the converter or the serializer, not a test to
 // weaken: it means the document promises something huma does not enforce (or
@@ -18,19 +18,18 @@ package huma
 // unnoticed:
 //
 //	Extensions             — document-only on BOTH sides (nothing diverges)
-//	Opaque                 — spec §5a: doc enforces, huma accepts
-//	unbound component      — the Task-18 serving rule: same shape as Opaque
+//	Opaque                 — doc enforces, huma accepts
+//	unbound component      — the serving rule: same shape as Opaque
 //	lax formats            — huma's uuid/base64 checks are laxer (cited)
 //	contentMediaType       — doc enforces, huma has no such field
 //	undeclared dependent   — dependentRequired keyed on an undeclared property
 //	readOnly / writeOnly   — huma is mode-aware, 2020-12 is annotation-only
 //
 // Every one of them is one-sided in the SAFE direction: the document promises at
-// least as much as huma enforces, never less. The one place that was NOT true —
-// huma's case-INSENSITIVE property matching, which rejects instances the
-// document accepts — was fixed rather than exempted: NewConfig turns
-// huma.ValidateStrictCasing on (config.go), and the Casing/* rows below pin the
-// agreement.
+// least as much as huma enforces, never less. huma's case-INSENSITIVE property
+// matching would break that — it rejects instances the document accepts — so it
+// is not exempted but switched off: NewConfig turns huma.ValidateStrictCasing on
+// (config.go), and the Casing/* rows below pin the agreement.
 //
 // Fixtures are built through apidoc.RawFragment — the TYPED ingress path, so the
 // row exercises real typed IR fields and not the Opaque escape hatch. The
@@ -503,14 +502,13 @@ func equivalenceRows() []eqRow {
 			reject:   []string{`"x"`, `1`},
 		},
 		{
-			// THE CROWN JEWEL. anyOf[$ref, {"type":"null"}] is the canonical
-			// nullable-reference idiom the reflector emits. huma's validator has
-			// no "null" type case, so before Task 18's null-enum rule the null
-			// arm accepted EVERY value and the whole reference went unvalidated
-			// at runtime while the document still promised it. The converter now
-			// emits "enum":[null] on such an arm (convert.go), which is
-			// semantically identical in 2020-12 and enforced by huma's
-			// membership check — so the two sides agree here.
+			// anyOf[$ref, {"type":"null"}] is the canonical nullable-reference
+			// idiom the reflector emits. huma's validator has no "null" type
+			// case, so a bare null arm would accept EVERY value and leave the
+			// whole reference unvalidated at runtime while the document still
+			// promised it; the converter emits "enum":[null] on such an arm
+			// (convert.go), which is semantically identical in 2020-12 and
+			// enforced by huma's membership check.
 			keyword: "Nullable/ref",
 			fragment: frag(map[string]any{"anyOf": []any{
 				map[string]any{"$ref": apidoc.RefPrefix + "Target"},
@@ -571,16 +569,11 @@ func TestEquivalenceExemptionExtensions(t *testing.T) {
 	}
 }
 
-// TestEquivalenceExemptionOpaque pins spec §5a's marked trade-off: an Opaque
-// component is DOCUMENT-ONLY. The bytes reach the emitted document verbatim and
-// the 2020-12 validator enforces every constraint in them, but the converter
-// turns an opaque node into a zero typed Schema whose Extensions hold the whole
-// fragment (convert.go's KindOpaque branch) — Type is "", so huma's validator
-// falls through its type switch and accepts anything.
-//
-// This is the ONE place the invariant is knowingly one-sided, and it is
-// one-sided in the SAFE direction: the document says more than huma enforces,
-// never less.
+// TestEquivalenceExemptionOpaque pins the marked trade-off: an Opaque
+// component is DOCUMENT-ONLY. The 2020-12 validator enforces every constraint
+// in the bytes, but the converter turns an opaque node into a zero typed Schema
+// whose Extensions hold the fragment (convert.go's KindOpaque branch) — Type is
+// "", so huma's validator falls through its type switch and accepts anything.
 func TestEquivalenceExemptionOpaque(t *testing.T) {
 	// A fragment the typed IR cannot model ("patternProperties") carrying a real
 	// constraint alongside it.
@@ -614,16 +607,11 @@ func TestEquivalenceExemptionOpaque(t *testing.T) {
 	}
 }
 
-// TestEquivalenceExemptionUnboundComponent pins the SECOND, structural half of
-// the same trade-off — the known Task-18 class. registry.go's schemaFor SERVING
-// RULE serves a component through the Extensions bridge (opaque) whenever its Go
-// wire type is unknown or is not a struct, because huma's SchemaLinkTransformer
-// would otherwise panic building a wrapper struct from a nil type. A component
-// registered by hand with no RegisterType is therefore UNVALIDATED at runtime
-// however typed its IR is, exactly like an Opaque one — while the document still
-// promises the constraint.
-//
-// Anything reached through a $ref to such a component inherits the exemption.
+// TestEquivalenceExemptionUnboundComponent pins the structural half of the same
+// trade-off: schemaFor (registry.go) serves a component opaque whenever its Go
+// wire type is unknown or not a struct, so a component registered by hand with
+// no RegisterType is UNVALIDATED at runtime however typed its IR is. Anything
+// reached through a $ref to such a component inherits the exemption.
 func TestEquivalenceExemptionUnboundComponent(t *testing.T) {
 	loose := apidoc.RawFragment(map[string]any{"type": "integer", "minimum": 10})
 	if loose.IR().Kind == apidoc.KindOpaque {
@@ -716,7 +704,7 @@ func TestEquivalenceExemptionLaxFormats(t *testing.T) {
 
 // TestEquivalenceExemptionContentMediaType pins that "contentMediaType" is
 // DOCUMENT-ONLY. huma's Schema has no such field, so the converter routes it
-// into the inline Extensions map (convert.go, plan decision #11) where huma's
+// into the inline Extensions map (convert.go) where huma's
 // validator never looks; crosscheck runs with AssertContent on and does decode
 // the string as the declared media type. Safe direction — the document says more
 // than huma enforces.

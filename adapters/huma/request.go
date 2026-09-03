@@ -1,12 +1,8 @@
 package huma
 
-// request.go — the per-request snapshot the engine reads.
-//
 // include.Ctx exposes Header / PathParam / QueryValue to Wire functions,
-// Guards, Enrich hooks and fetchers, and it reads them off an
-// *include.Request an ADAPTER fills. This file is that adapter half: one huma
-// middleware that snapshots the request once, and one accessor for the
-// handler side.
+// Guards, Enrich hooks and fetchers, reading them off an *include.Request an
+// ADAPTER fills. This file is that adapter half.
 
 import (
 	"context"

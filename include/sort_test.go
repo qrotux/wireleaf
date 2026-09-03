@@ -32,8 +32,6 @@ func TestReverseSortKey(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ engine threading
-
 // sortSpyReg decorates a Registry recording the EdgeQuery.Sort value each
 // batched reverse call received (per resource Name). Non-invasive wrapper,
 // mirroring spyReg (materialize_test.go).

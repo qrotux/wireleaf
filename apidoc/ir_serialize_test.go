@@ -154,7 +154,7 @@ func TestIRSerializeBasics(t *testing.T) {
 				n.AdditionalProperties = newScalar("string")
 				return n
 			}(),
-			// Zero Props → no "properties" key at all (Task 13 decision).
+			// Zero Props → no "properties" key at all.
 			`{"type":"object","additionalProperties":{"type":"string"}}`,
 		},
 		{

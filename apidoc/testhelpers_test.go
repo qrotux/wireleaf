@@ -16,9 +16,8 @@ import (
 // ---------------------------------------------------------------------------
 // generic-fragment builders (assertion side only)
 //
-// These moved out of schemafor.go when SchemaFor was rewritten over the IR
-// (Task 14): the production code builds IR nodes, so the map forms survive
-// only as the shape the tests compare Schema.Map() against.
+// Production code builds IR nodes; these map forms exist only as the shape the
+// tests compare Schema.Map() against.
 // ---------------------------------------------------------------------------
 
 // ref builds a bare $ref fragment to component `name`.
@@ -196,11 +195,11 @@ func (r *bareRes) Enrich(docs []any, c *include.Ctx) error { return nil }
 var _ include.Resource = (*bareRes)(nil)
 
 // ---------------------------------------------------------------------------
-// shared fixtures & fragment assertions (relocated from emit_test.go, Task 14)
+// shared fixtures & fragment assertions
 //
 // The toy graph and the generic-fragment accessors are used by emit_test.go,
-// schemafor_test.go and build_test.go alike, so they belong in the ONE shared
-// home this file claims. Pure relocation: no behavior changed.
+// schemafor_test.go and build_test.go alike, so they live in this one shared
+// home.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------

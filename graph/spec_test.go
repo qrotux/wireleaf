@@ -125,7 +125,7 @@ func specViaAdd(b *Builder) (book *NodeHandle[bkRow, BkWire], author *NodeHandle
 	return book, author
 }
 
-// ------------------------------------------------------------------ AC: Add records exactly what the chain records
+// ------------------------------------------------------------------ Add records exactly what the chain records
 
 // nodeShape / edgeShape flatten the recorded state into comparable values:
 // every set-flag and scalar, plus "is the closure bound" (closures themselves
@@ -253,7 +253,7 @@ func TestAddRecordsLikeChain(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ AC: every EdgeSpec field reaches its EdgeBuilder method
+// ------------------------------------------------------------------ every EdgeSpec field reaches its EdgeBuilder method
 
 // The mirror fixture above cannot carry every option on one legal graph
 // (Sort needs a sortCol, Bare excludes Limit…), so apply is checked
@@ -291,7 +291,7 @@ func TestEdgeSpecApplyCoversEveryField(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ AC: an EdgeSpec missing Key or Kind is ONE clear finding
+// ------------------------------------------------------------------ an EdgeSpec missing Key or Kind is ONE clear finding
 
 func TestAddEdgeSpecMissingKeyOrKind(t *testing.T) {
 	b := NewBuilder()
@@ -321,7 +321,7 @@ func TestAddEdgeSpecMissingKeyOrKind(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ AC: zero fields are "not declared", not "declared empty"
+// ------------------------------------------------------------------ zero fields are "not declared", not "declared empty"
 
 func TestAddZeroFieldsAreUndeclared(t *testing.T) {
 	b := NewBuilder()
@@ -363,7 +363,7 @@ func TestAddZeroFieldsAreUndeclared(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ AC: same bytes end to end
+// ------------------------------------------------------------------ same bytes end to end
 
 func TestAddHydratesLikeChain(t *testing.T) {
 	hydrate := func(t *testing.T, declare func(*Builder) (*NodeHandle[bkRow, BkWire], *NodeHandle[auRow, AuWire])) []byte {
@@ -394,7 +394,7 @@ func TestAddHydratesLikeChain(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ AC: the handle is a live NodeHandle; Add dies with the builder
+// ------------------------------------------------------------------ the handle is a live NodeHandle; Add dies with the builder
 
 func TestAddHandleMixesWithChain(t *testing.T) {
 	b := NewBuilder()

@@ -115,7 +115,7 @@ func TestWrappedEdgeShapeInlinedMirrorsRef(t *testing.T) {
 	}
 }
 
-// The plain shapes are untouched by the new branch.
+// The plain shapes are untouched by the envelope branch.
 func TestPlainEdgeShapeUnchangedByEnvelopeField(t *testing.T) {
 	e := include.Edge{Many: true, Backref: "p"}
 	got := irMap(t, edgeShape(e, newRef("T")))
@@ -129,7 +129,7 @@ func TestPlainEdgeShapeUnchangedByEnvelopeField(t *testing.T) {
 	}
 }
 
-// spec §6: SchemaFor over a graph whose included edge carries an Envelope AND
+// SchemaFor over a graph whose included edge carries an Envelope AND
 // a sub-include, so the target is INLINED rather than $ref-ed. The wrapper must
 // survive inlining at the edge site, and the inlined target's own enveloped
 // edge must be wrapped in turn.

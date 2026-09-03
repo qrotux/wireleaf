@@ -17,18 +17,14 @@ package huma
 // Everything else is DefaultConfig's: the OpenAPI 3.1 skeleton, /openapi,
 // /docs, and the two JSON format keys ("application/json" and "json"), in a
 // fresh map so a caller's edit cannot reach the package global. The format
-// itself is wireleaf's (jsonFormat below), not huma.DefaultJSONFormat: the
-// response body must carry no trailing newline and no HTML escaping. CBOR is
+// itself is wireleaf's (jsonFormat below), not huma.DefaultJSONFormat. CBOR is
 // deliberately absent — huma only adds it when the application imports the
 // format package, and wireleaf's contract is JSON.
 //
-// registryConfig: Config.AllowAdditionalPropertiesByDefault and
-// Config.FieldsOptionalByDefault are applied by huma ONLY to its own
-// mapRegistry, so they are silently INERT against the bridge (registry.go's
-// LIMITATION note). No ConfigOpt exposes them, and NewConfig does not accept
-// them: additional-properties and required-ness are the canonical reflector's
-// verdict, and an option that looks like it changes them but does not is worse
-// than no option at all.
+// No ConfigOpt exposes Config.AllowAdditionalPropertiesByDefault or
+// Config.FieldsOptionalByDefault: both are inert against the bridge (see the
+// LIMITATION note in registry.go), and an option that looks like it changes
+// something but does not is worse than no option at all.
 
 import (
 	"bytes"
@@ -69,7 +65,7 @@ func enableStrictCasing() {
 // jsonFormat is wireleaf's replacement for humav2.DefaultJSONFormat. It pins
 // TWO properties of every JSON body this adapter writes:
 //
-//   - NO TRAILING NEWLINE (spec §6). json.Encoder.Encode appends one, which
+//   - NO TRAILING NEWLINE. json.Encoder.Encode appends one, which
 //     stock huma's format lets through; a response body must be exactly the
 //     document's bytes, because the graph layer splices and measures those
 //     bytes. The single "\n" Encode adds is stripped back off here.

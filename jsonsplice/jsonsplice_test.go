@@ -333,10 +333,10 @@ func TestElementsErrors(t *testing.T) {
 	}
 }
 
-// M3 — encodeKey must NOT HTML-escape. A key containing '<', '>' or '&' is
-// written with its raw bytes, matching what the response encoder emits (the
-// adapter's jsonFormat also disables escaping). json.Marshal, the previous
-// implementation, would have produced "a<b&c".
+// encodeKey must NOT HTML-escape. A key containing '<', '>' or '&' is written
+// with its raw bytes, matching what the response encoder emits (the adapter's
+// jsonFormat also disables escaping); json.Marshal would produce
+// "a\u003cb\u0026c" instead.
 func TestSpliceKeyIsNotHTMLEscaped(t *testing.T) {
 	const key = "a<b&c>d"
 	got, err := Splice([]byte(`{"id":"x"}`), key, []byte(`1`))

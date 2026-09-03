@@ -6,14 +6,8 @@ import (
 	"testing"
 )
 
-// ---------------------------------------------------------------------------
-// TestHydrateByQuery
-//
-// A fake RootFetcher returns 2 toy root docs (a1, a2) + total=2 + hasMore=false.
-// We pass an explicit include for "child" so the plan has a child edge, and the
-// materialized output includes a "child" field.
-// ---------------------------------------------------------------------------
-
+// The list facade materializes every fetched root doc in input order, and the
+// requested include reaches both the plan and the bytes.
 func TestHydrateByQuery(t *testing.T) {
 	g := buildToyGraph()
 	ctx := &Ctx{Registry: g.Reg}
@@ -27,7 +21,6 @@ func TestHydrateByQuery(t *testing.T) {
 		return []any{a1, a2}, 2, false, nil
 	})
 
-	// Explicitly include "child" so the plan has that edge.
 	inc := IncludeTree{"child": IncludeTree{}}
 	q := QueryArgs{Limit: 20}
 	result, plan, err := HydrateByQuery(g.A, q, inc, nil, fetcher, ctx, DefaultOptions)
@@ -50,7 +43,6 @@ func TestHydrateByQuery(t *testing.T) {
 		t.Fatalf("Data len = %d, want 2", len(result.Data))
 	}
 
-	// plan must be non-nil and have the "child" edge we requested.
 	if plan == nil {
 		t.Fatal("plan is nil")
 	}
@@ -58,7 +50,6 @@ func TestHydrateByQuery(t *testing.T) {
 		t.Error("plan should have 'child' child (explicit include)")
 	}
 
-	// Spot-check first doc: should have "id", "name", and "child" field.
 	var doc0 map[string]json.RawMessage
 	if err := json.Unmarshal(result.Data[0], &doc0); err != nil {
 		t.Fatalf("unmarshal data[0]: %v", err)
@@ -70,7 +61,6 @@ func TestHydrateByQuery(t *testing.T) {
 		t.Error("data[0] missing 'child' (explicit include)")
 	}
 
-	// Spot-check second doc: same structure.
 	var doc1 map[string]json.RawMessage
 	if err := json.Unmarshal(result.Data[1], &doc1); err != nil {
 		t.Fatalf("unmarshal data[1]: %v", err)
@@ -80,13 +70,8 @@ func TestHydrateByQuery(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// TestHydrateByQuery_400BeforeFetch
-//
-// An invalid include (unknown edge "bogus") must cause an error BEFORE fetch
-// is called — the fetch counter stays 0.
-// ---------------------------------------------------------------------------
-
+// An invalid include fails BEFORE the fetch closure runs: the fetch counter
+// stays 0.
 func TestHydrateByQuery_400BeforeFetch(t *testing.T) {
 	g := buildToyGraph()
 	ctx := &Ctx{Registry: g.Reg}
@@ -112,12 +97,7 @@ func TestHydrateByQuery_400BeforeFetch(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// TestHydrateByID_NotFound
-//
-// Fetch returns (nil, nil) → HydrateByID must return a *Error with Status 404.
-// ---------------------------------------------------------------------------
-
+// A fetch returning (nil, nil) is the 404 path: *Error with Status 404.
 func TestHydrateByID_NotFound(t *testing.T) {
 	g := buildToyGraph()
 	ctx := &Ctx{Registry: g.Reg}
@@ -142,13 +122,6 @@ func TestHydrateByID_NotFound(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// TestHydrateByID_Found
-//
-// Fetch returns a real doc → HydrateByID materializes it and returns a single
-// json.RawMessage.
-// ---------------------------------------------------------------------------
-
 func TestHydrateByID_Found(t *testing.T) {
 	g := buildToyGraph()
 	ctx := &Ctx{Registry: g.Reg}
@@ -158,7 +131,6 @@ func TestHydrateByID_Found(t *testing.T) {
 		return a1, nil
 	}
 
-	// Explicitly include "child" so we get a non-trivial materialized output.
 	inc := IncludeTree{"child": IncludeTree{}}
 	raw, plan, err := HydrateByID(g.A, "a1", inc, nil, fetch, ctx, DefaultOptions)
 	if err != nil {
@@ -182,14 +154,8 @@ func TestHydrateByID_Found(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// TestHydrateEntity
-//
-// Materialize a supplied toy doc without a root fetch. With an empty include
-// tree and the self-cycle guard, the root plan has no children; so the output
-// is just the scalar wire struct.
-// ---------------------------------------------------------------------------
-
+// With an empty include tree the default-cycle guard leaves the root plan
+// childless, so the output is the scalar wire struct alone.
 func TestHydrateEntity(t *testing.T) {
 	g := buildToyGraph()
 	ctx := &Ctx{Registry: g.Reg}
@@ -215,7 +181,6 @@ func TestHydrateEntity(t *testing.T) {
 		t.Errorf("name = %s, want \"Beta\"", m["name"])
 	}
 
-	// Now include "child" explicitly — result should have a "child" key.
 	inc := IncludeTree{"child": IncludeTree{}}
 	raw2, plan2, err := HydrateEntity(g.A, doc, inc, nil, ctx, DefaultOptions)
 	if err != nil {
@@ -232,10 +197,6 @@ func TestHydrateEntity(t *testing.T) {
 		t.Error("result missing 'child' (explicit include)")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// TestHasInclude
-// ---------------------------------------------------------------------------
 
 func TestHasInclude(t *testing.T) {
 	g := buildToyGraph()
@@ -259,7 +220,6 @@ func TestHasInclude(t *testing.T) {
 		t.Error("HasInclude('bogus') = true, want false")
 	}
 
-	// Explicitly include "child".
 	plan2, err := ResolvePlan(g.A, IncludeTree{"child": IncludeTree{}}, nil, DefaultOptions)
 	if err != nil {
 		t.Fatalf("ResolvePlan with child: %v", err)
@@ -267,12 +227,10 @@ func TestHasInclude(t *testing.T) {
 	if !HasInclude(plan2, "child") {
 		t.Error("HasInclude('child') = false after explicit include, want true")
 	}
-	// "kids" not requested.
 	if HasInclude(plan2, "kids") {
 		t.Error("HasInclude('kids') = true, want false (not requested)")
 	}
 
-	// Explicitly include "kids".
 	plan3, err := ResolvePlan(g.A, IncludeTree{"kids": IncludeTree{}}, nil, DefaultOptions)
 	if err != nil {
 		t.Fatalf("ResolvePlan with kids: %v", err)

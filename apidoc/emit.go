@@ -49,28 +49,18 @@ type docExternaler interface{ IsDocExternal() bool }
 // under the node's Name(), its includable edges stitched in, and every
 // auxiliary struct component inlined where the rules allow (see inlineAux).
 //
-// RESTRICTION — IT RETURNS ONE SCHEMA AND NOTHING ELSE, so an auxiliary that
-// SURVIVES inlining has nowhere to go. inlineAux leaves three kinds of
-// auxiliary as a $ref: one referenced non-barely (the sole-ref rule), an
-// Opaque one, and a cyclic one (a self-referential or mutually-referential
-// struct). The returned Schema would then carry a $ref to a component this
-// function cannot hand back — a DANGLING reference in the assembled document —
-// so a survivor is an ERROR here, naming the components and pointing at
-// EmitComponents (which returns the whole map and has no such limit). A
-// reference the singular form CAN satisfy — another graph node, or a
-// doc-external name — is not a survivor and stays legal.
+// Two restrictions, both because it returns ONE schema and knows ONE node name:
 //
-//	Use EmitComponent for a node whose wire struct references plain,
-//	acyclic, non-Opaque helper structs (or none at all) — everything the
-//	inliner is guaranteed to flatten. Anything else: EmitComponents.
+//   - an auxiliary that survives inlining (sole-ref, Opaque or cyclic — see
+//     inlineAux) has nowhere to go and would dangle, so it is an ERROR naming
+//     the components. A $ref to another graph node or a doc-external name is
+//     not a survivor and stays legal.
+//   - every other component the reflector emits is classified as an auxiliary,
+//     so a wire struct that embeds ANOTHER NODE's wire type gets that sibling
+//     INLINED where EmitComponents would keep it a $ref.
 //
-// RESTRICTION — the singular form also knows only ONE node name, so it
-// classifies every other component the reflector emits as an auxiliary. If the
-// wire struct embeds ANOTHER GRAPH NODE's wire type, EmitComponent will INLINE
-// that sibling node where EmitComponents would keep it a $ref, because nothing
-// here can tell a sibling node's component from an implementation-detail struct.
-// For a wire struct that references other NODES' wire types, use
-// EmitComponents — pass every such node as a root.
+// Use EmitComponents, with every node as a root, for anything beyond plain,
+// acyclic, non-Opaque helper structs.
 func EmitComponent(r Reflector, node include.Resource) (string, Schema, error) {
 	name := node.Name()
 	out, err := emitFragments(r, []include.Resource{node})
@@ -166,17 +156,12 @@ func emitFragments(r Reflector, nodes []include.Resource) (map[string]*IRNode, e
 	return inlineAux(out, nodeNames)
 }
 
-// collectReachable returns the nodes reachable from roots by following
-// includable edges' targets AND default edges' targets. Defaults are in scope
-// regardless of Includable because the engine materializes Defaults() ∪ client
-// keys at every level — a non-includable default edge's target appears in
-// responses, is $ref'd by the stitched component, and must therefore be
-// emitted (else the reference dangles at Verify). Dedup is by Name()
-// (globally-unique component name), which makes the walk cycle-safe. A
-// duplicate distinct-node-same-name is a hard error (two components would
-// clobber). Traversal order is NOT deterministic (the DFS stack is fed by map
-// iteration over Edges()); the set is, and the caller's output is a map, so
-// order does not matter.
+// collectReachable returns the nodes reachable from roots through includable
+// AND default edges (a non-includable default's target is still $ref'd by the
+// stitched component, so it must be emitted or the reference dangles). Dedup is
+// by Name(), which makes the walk cycle-safe; two distinct nodes sharing a name
+// is a hard error. Traversal order is not deterministic (the DFS stack is fed by
+// map iteration over Edges()), the resulting set is.
 func collectReachable(roots []include.Resource) ([]include.Resource, error) {
 	seen := make(map[string]include.Resource)
 	var order []include.Resource
@@ -250,17 +235,12 @@ func wireType(node include.Resource) (reflect.Type, error) {
 	return DerefType(reflect.TypeOf(sample)), nil
 }
 
-// stitchEdges inserts each INCLUDABLE or DEFAULT edge of node into base's
-// Props using the edge-shape policy (edgeshape.go). Defaults are stitched
-// regardless of Includable — the engine materializes Defaults() ∪ client keys
-// at every level, so a non-includable default key is in every response and the
-// component must describe it. Other non-includable edges are omitted entirely.
-// An edge key is optional — the value shape alone encodes nullability, and a
-// default key stays optional too (client ?exclude= can prune it) — with ONE
-// exception: a REQUIRED to-one edge (graph.Required(); include.Edge.Required
-// is legal on to-one only) is declared always present, so it is stitched as a
-// bare $ref AND listed in `required`. Keys are processed in sorted order so a
-// repeated emission produces byte-identical documents.
+// stitchEdges inserts each INCLUDABLE or DEFAULT edge of node into base's Props
+// using the edge-shape policy (edgeshape.go); other non-includable edges are
+// omitted. An edge key is optional (the value shape encodes nullability, and
+// ?exclude= can prune a default key) with ONE exception: a REQUIRED to-one edge
+// is stitched as a bare $ref AND listed in `required`. Keys are processed in
+// sorted order so repeated emission is byte-identical.
 func stitchEdges(base *IRNode, node include.Resource) error {
 	edges := node.Edges()
 	if len(edges) == 0 {
@@ -359,13 +339,11 @@ func setProp(base *IRNode, name string, value *IRNode, required bool) {
 //     path a sole-ref takes. That is a document that is merely less flat, not
 //     an error; a self-referential struct is an ordinary Go shape.
 //
-// Cyclic auxiliaries are found by an SCC pre-pass over the inlinable-$ref graph
-// (auxInCycle) BEFORE any substitution runs, which leaves the remaining
-// substitution set provably acyclic; the round bound below is therefore an
-// assertion, not the cycle check.
-//
-// Auxiliaries still referenced after the fixpoint (blocked by any of the three
-// rules) survive as their own components; unreferenced ones are dropped.
+// Cyclic auxiliaries are found by an SCC pre-pass (auxInCycle) BEFORE any
+// substitution runs, so the remaining substitution set is provably acyclic and
+// the round bound below is an assertion, not the cycle check. Auxiliaries still
+// referenced after the fixpoint survive as their own components; unreferenced
+// ones are dropped.
 func inlineAux(out map[string]*IRNode, nodeNames map[string]include.Resource) (map[string]*IRNode, error) {
 	aux := map[string]*IRNode{}
 	for name, n := range out {
@@ -499,18 +477,14 @@ func inlinableRefTargets(n *IRNode, aux map[string]*IRNode) []string {
 // that auxiliary's schema, plus whether anything changed. Nodes are never
 // mutated: a changed subtree is rebuilt, an unchanged one is shared.
 //
-// INVARIANT — inlined subtrees are SHARED BY POINTER across components: the
-// same *IRNode can appear inside several emitted components (and several times
-// within one). Every downstream consumer must therefore treat IR nodes as
-// IMMUTABLE and clone before mutating, or a delta applied to one component will
-// silently rewrite the others. (Schema's delta methods mutate, which is why the
-// package convention is single-owner-per-node; emitted components break that
-// ownership on purpose, in exchange for not copying whole subtrees.)
+// INVARIANT — inlined subtrees are SHARED BY POINTER across (and within)
+// emitted components, so every downstream consumer must treat IR nodes as
+// IMMUTABLE and clone before mutating; Schema's delta methods mutate, which is
+// why emitted components deliberately break the single-owner-per-node
+// convention in exchange for not copying whole subtrees.
 //
-// It REBUILDS the tree rather than walking it, so it cannot share forEachChild
-// (ir.go) — but its per-field cases below must cover exactly the child edge
-// set forEachChild defines. A new *IRNode-carrying field gets a case here AND
-// a line there, or the SCC pre-pass and this fixpoint fall out of agreement.
+// It REBUILDS the tree rather than walking it, so the per-field cases below
+// must cover exactly the child edge set forEachChild (ir.go) defines.
 func substituteAux(n *IRNode, aux map[string]*IRNode) (*IRNode, bool) {
 	if n == nil {
 		return nil, false

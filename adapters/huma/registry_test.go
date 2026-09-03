@@ -247,8 +247,8 @@ func TestBridgeServesApplicationComponentsTyped(t *testing.T) {
 	if s.Type != "object" || s.Properties["id"] == nil || len(s.Extensions) != 0 {
 		t.Fatalf("application component is not typed: %#v", s)
 	}
-	// Typed means ENFORCED: the required property is validated, which the old
-	// Extensions bridge could never do.
+	// Typed means ENFORCED: the required property is validated, which the
+	// Extensions bridge cannot do.
 	res := &humav2.ValidateResult{}
 	humav2.Validate(b, s, humav2.NewPathBuffer([]byte(""), 0), humav2.ModeWriteToServer, map[string]any{}, res)
 	if len(res.Errors) == 0 {

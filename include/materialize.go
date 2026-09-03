@@ -24,29 +24,16 @@ const (
 // nullRaw is the shared literal-null edge value.
 var nullRaw = json.RawMessage("null")
 
-// Materialize breadth-first materializes one level (plan, docs, ctx) and returns
-// one json.RawMessage per input doc, in the SAME order:
-//
-//   - plan.Resource.Enrich runs FIRST (a batch side-fetch hook), before serialize;
-//   - each doc is serialized level-only (no child edges) into its scalar bytes;
-//   - each child edge in plan.Children is resolved IN ORDER — the whole level is
-//     batched (one FetchByIDs per forward edge; one FetchByParents per reverse
-//     edge) — then attached onto each doc under the edge key via assembleObject.
-//     The value is wrapped per `Edge.Envelope` as the LAST step —
-//     `{"<Key>":obj}` / `{"<Key>":[…],"<Pagination>":{…}}` — after every policy
-//     has been applied.
-//     COMPUTED children are SKIPPED entirely: no fetch, and no key in the
-//     output bytes (the application splices its own value in).
-//   - an IN-ARRAY child is the exception to "attached under the edge key": its
-//     targets are spliced INTO the parent's own scalar bytes, inside each
-//     element of the parent's array field (Edge.ArrayPath), under Edge.SubField.
-//     Such an edge contributes no top-level key of its own.
-//
-// The result is aligned 1:1 with docs (input order preserved). The plan tree is
-// finite (ResolvePlan bounds it, incl. the default-cycle guard), so the recursion
-// always terminates.
+// Materialize materializes one level breadth-first and returns one
+// json.RawMessage per input doc, in the same order. Enrich runs before
+// serialization; each child edge is then resolved IN PLAN ORDER with one batch
+// fetch per edge for the whole level, and attached under its key (wrapped per
+// Edge.Envelope as the LAST step, after every policy). A COMPUTED child is
+// skipped entirely — no fetch, no key; an IN-ARRAY child is spliced into the
+// parent's own array elements instead of getting a key. The plan tree is
+// finite (ResolvePlan bounds it), so the recursion terminates.
 func Materialize(plan *PlanNode, docs []any, ctx *Ctx) ([]json.RawMessage, error) {
-	// 0) Budget and cancellation, checked once per level BEFORE any work.
+	// Budget and cancellation, checked once per level BEFORE any work.
 	if err := ctx.StdContext().Err(); err != nil {
 		return nil, fmt.Errorf("include: materialize %q: %w", plan.Path, err)
 	}
@@ -58,12 +45,11 @@ func Materialize(plan *PlanNode, docs []any, ctx *Ctx) ([]json.RawMessage, error
 		return nil, NewError(INCLUDE_BUDGET_EXCEEDED, fmt.Sprintf("%q: %d rows materialized, budget %d", plan.Path, ctx.rows, ctx.maxRows))
 	}
 
-	// 1) Enrich the whole level BEFORE serialize (may issue batch side-fetches).
+	// Enrich the whole level BEFORE serialize; it may issue batch side-fetches.
 	if err := plan.Resource.Enrich(docs, ctx); err != nil {
 		return nil, err
 	}
 
-	// 2) Serialize this level (level-only; child edges attached below).
 	scalar := make([]json.RawMessage, len(docs))
 	for i, doc := range docs {
 		wire := plan.Resource.Serialize(doc, ctx)
@@ -74,13 +60,10 @@ func Materialize(plan *PlanNode, docs []any, ctx *Ctx) ([]json.RawMessage, error
 		scalar[i] = b
 	}
 
-	// 3) Resolve each child edge across the WHOLE level, IN plan order. edgeVals[c]
-	//    is the per-parent (per-doc) resolved value for child c, aligned with docs.
-	//    COMPUTED children are dropped here: the engine never fetches or emits
-	//    them (their key is absent from these bytes; the application splices its
-	//    own value in afterwards).
-	//    IN-ARRAY children are split off too: they rewrite the scalar bytes in
-	//    place (below) instead of contributing a top-level key.
+	// COMPUTED children are dropped here: the engine never fetches or emits them,
+	// and the application splices its own value in afterwards. IN-ARRAY children
+	// are split off too: they rewrite the scalar bytes in place instead of
+	// contributing a top-level key.
 	children := make([]*PlanNode, 0, len(plan.Children))
 	for _, child := range plan.Children {
 		if child.Computed {
@@ -104,8 +87,6 @@ func Materialize(plan *PlanNode, docs []any, ctx *Ctx) ([]json.RawMessage, error
 		edgeVals[ci] = vals
 	}
 
-	// 4) Assemble: append each child's edge value onto every doc's scalar bytes,
-	//    preserving order (scalar fields first, then edges in plan order).
 	out := make([]json.RawMessage, len(docs))
 	for i := range docs {
 		if len(children) == 0 {
@@ -167,29 +148,14 @@ func missingForeignFor(child *PlanNode, ctx *Ctx) MissingForeignPolicy {
 	return ctx.Policies.MissingForeign
 }
 
-// collectIDs runs the shared guard-then-collect pass every FORWARD edge kind
-// starts with (to-one, forward-hasMany, in-array): iterate docs IN ORDER, check
-// child's guard once per parent, pull that parent's target ids via fks, and
-// dedupe them into one level-wide fetch union.
-//
-//   - guard FIRST: a guarded-out parent gets perParent[i] = nil and
-//     guarded[i] = true, and fks is NOT called for it (its ids never reach the
-//     DB); how "guarded" renders (null / empty node) is the CALLER's business —
-//     guarded exists so callers can tell a guarded-out parent from one whose
-//     fks legitimately came back empty;
-//   - fks(i, doc) returns the parent's target ids in the order the caller wants
-//     them consumed (to-one wraps its single FK in a 0/1-element slice; in-array
-//     returns ARRAY ORDER); it may capture per-index state (forward-hasMany
-//     records its hasMore probe through i);
-//   - perParent[i] stores fks's result VERBATIM (aligned with docs) — the caller
-//     rebuilds its per-parent output from it;
-//   - union holds the distinct non-empty ids across the level in FIRST-SEEN
-//     order ("" is never fetched — an empty id is a legitimate no-target, not a
-//     DB id). It feeds ONE batch FetchByIDs via fetchAndIndex.
-//
-// A reverse edge runs its own variant inline (resolveReverse): it collects one
-// parent id per doc via parent.Resource.IDOf — not FKs off the row — and its
-// union deliberately keeps "" (the id list is echoed back by FetchByParents).
+// collectIDs is the guard-then-collect pass every FORWARD edge kind starts
+// with. The guard runs FIRST and fks is not called for a guarded-out parent
+// (its ids never reach the DB); guarded lets the caller tell that parent from
+// one whose fks came back empty, and how it renders is the caller's business.
+// perParent keeps fks's result verbatim per doc; union holds the distinct
+// non-empty ids in first-seen order ("" is a legitimate no-target, never a DB
+// id). resolveReverse runs its own variant: one parent id per doc via IDOf, and
+// its union keeps "".
 func collectIDs(child *PlanNode, docs []any, ctx *Ctx, fks func(i int, doc any) []string) (perParent [][]string, guarded []bool, union []string) {
 	perParent = make([][]string, len(docs))
 	guarded = make([]bool, len(docs))
@@ -212,18 +178,11 @@ func collectIDs(child *PlanNode, docs []any, ctx *Ctx, fks func(i int, doc any) 
 	return perParent, guarded, union
 }
 
-// resolveToOne resolves a to-one forward edge across the level:
-//
-//   - guard FIRST: a guarded-out parent → null, contributes NO fk (no DB id);
-//   - fk := child.Edge.ForeignKey(doc); "" → null (legitimate empty FK, no DB id);
-//   - one batch FetchByIDs over the distinct non-empty fks; recurse+index by IDOf;
-//   - per parent: null (guarded/empty) | idx[fk] | null (missing id = access-dropped).
-//
-// On a REQUIRED edge every one of those null paths is subject to the resolved
-// RequiredMissing policy: under MissingRequiredError the request fails instead
-// of emitting a null the published component forbids. The message names the
-// edge, the parent and WHICH path produced it, because the three have different
-// causes (no FK in the row / guarded out / the fetcher did not return the row).
+// resolveToOne resolves a to-one forward edge across the level. A parent is
+// null when guarded out, when its FK is "", or when the fetcher did not return
+// the id. On a REQUIRED edge each of those null paths is subject to the
+// resolved RequiredMissing policy, and the error names WHICH path produced it
+// because the three have different causes.
 func resolveToOne(child *PlanNode, docs []any, ctx *Ctx) ([]json.RawMessage, error) {
 	// Per-parent fk as a 0/1-element slice (empty = null: empty FK; guarded-out
 	// is flagged separately). collectIDs dedupes the distinct non-empty union.
@@ -296,15 +255,11 @@ func missingRequiredErr(child *PlanNode, doc any, guarded bool) error {
 		child.Path)
 }
 
-// resolveForwardHasMany resolves a parent-holds-FK-array edge across the level:
-//
-//   - guard FIRST: guarded-out parent → empty ({items:[],hasMore:false} / bare []);
-//   - fks := child.Edge.ForeignKeys(doc); limit = the SAME resolved per-edge limit a
-//     reverse edge gets (clamp(client :limit, 1, Edge.Limit)), 0 when Bare;
-//   - hasMore = len(fks) > limit (never for bare); trim to limit unless bare;
-//   - one batch FetchByIDs over the union of trimmed fks; recurse+index by IDOf;
-//   - per parent: rebuild items in the parent's (trimmed) fk order, drop missing;
-//   - envelope {items,hasMore}, or a flat array when bare (empty → [], never null).
+// resolveForwardHasMany resolves a parent-holds-FK-array edge across the level.
+// The limit is the same resolved per-edge limit a reverse edge gets (0 when
+// Bare); hasMore is decided from the FK list itself (len > limit) before the
+// fetch, and only the trimmed ids are fetched. Items keep the parent's FK
+// order; the value is never null (empty → [] or {items:[],hasMore:false}).
 func resolveForwardHasMany(child *PlanNode, docs []any, ctx *Ctx) ([]json.RawMessage, error) {
 	bare := child.Edge.Bare
 	limit := resolvedLimit(child, defaultHasManyLimit)
@@ -359,25 +314,16 @@ func resolveForwardHasMany(child *PlanNode, docs []any, ctx *Ctx) ([]json.RawMes
 // other edge kind it produces no top-level key: the hydrated targets live
 // inside the parent's own array field.
 //
-//   - guard FIRST: a guarded-out parent contributes NO id to the batch and
-//     every one of its elements gets `SubField: null` (its collected ids are
-//     not even length-checked — they never reached the DB);
-//   - ids are collected via the typed child.Edge.ForeignKeys(doc) in ARRAY ORDER;
-//     they are deduped LEVEL-WIDE into ONE forward FetchByIDs (via
-//     fetchAndIndex, which materializes the child plan over the fetched rows,
-//     so nested includes under an in-array edge work);
-//   - the stitch is byte-level: jsonsplice.Member locates the array member
-//     (Edge.ArrayPath — the wire FIELD name, which need not equal the edge
-//     key), jsonsplice.Elements splits it, each element is spliced under
-//     Edge.SubField and the rebuilt array is spliced back. Order is preserved;
-//     an element that ALREADY carries SubField has that value replaced IN
-//     PLACE (the member keeps its position). Element interiors and every byte
-//     outside the array member survive verbatim — the one normalization is the
-//     array FRAME: inter-element whitespace is dropped when the array is
-//     rebuilt (elements are re-emitted comma-separated);
-//   - an ABSENT or null array member → the edge is skipped for that parent (no
-//     error). A non-object element, or a collected id list whose length differs
-//     from the wire array's, is a developer error and fails the request.
+//   - a guarded-out parent gets `SubField: null` on every element, and its
+//     collected ids are not even length-checked (they never reached the DB);
+//   - the stitch is byte-level (jsonsplice): Edge.ArrayPath is the wire FIELD
+//     name, which need not equal the edge key; an element that already
+//     carries SubField has the value replaced in place. Every byte outside the
+//     array frame survives verbatim; the one normalization is that
+//     inter-element whitespace is dropped when the array is rebuilt;
+//   - an ABSENT or null array member skips the edge for that parent. A
+//     non-object element, or an id list whose length differs from the wire
+//     array's, is a developer error and fails the request.
 func resolveInArray(child *PlanNode, docs []any, scalar []json.RawMessage, ctx *Ctx) error {
 	// Guard first, then collect the per-parent ids and the level-wide deduped union.
 	fksPerParent, guarded, union := collectIDs(child, docs, ctx, func(_ int, doc any) []string {
@@ -445,24 +391,13 @@ func resolveInArray(child *PlanNode, docs []any, scalar []json.RawMessage, ctx *
 func isJSONNull(v []byte) bool { return string(v) == "null" }
 
 // resolveReverse resolves a reverse (FK-on-child) edge across the WHOLE level
-// with a SINGLE batched fetch:
-//
-//   - guard FIRST: a guarded-out parent → EMPTY node (contributes NO parent id,
-//     no DB): enveloped {items:[],hasMore:false}; bare []. This is the SAME
-//     empty shape a guard-pass with zero rows yields (a reverse edge is never
-//     null). Only to-one returns null on guard-false.
-//   - the guard-passing parents' ids (parent.Resource.IDOf(doc)) are collected
-//     in DOC ORDER and deduped, preserving first occurrence;
-//   - the resolved EdgeQuery (limit / sort / remaining args) plus that id list
-//     go to ONE FetchByParents call for the level (skipped entirely when no
-//     parent passed the guard);
-//   - the result map is read per requested id: an absent parent is an empty
-//     collection, keys that were never requested are dropped, and a parent's
-//     rows are truncated to q.Limit defensively (Limit > 0 only);
-//   - every parent's rows are materialized in ONE recursive level call, so the
-//     grandchildren stay batched too;
-//   - envelope {items,hasMore(,nextCursor)}, or a bare flat array — a bare edge
-//     ignores HasMore and NextCursor entirely.
+// with ONE FetchByParents call (skipped when no parent passed the guard). A
+// guarded-out parent gets the same EMPTY shape a guard-pass with zero rows
+// yields — a reverse edge is never null. The result map is read per requested
+// id: unrequested keys are dropped and rows are truncated to q.Limit
+// defensively; every parent's rows are materialized in ONE recursive level
+// call so the grandchildren stay batched. A bare edge ignores HasMore and
+// NextCursor entirely.
 func resolveReverse(child *PlanNode, parent *PlanNode, docs []any, ctx *Ctx) ([]json.RawMessage, error) {
 	bare := child.Edge.Bare
 	env := child.Edge.Envelope
@@ -711,7 +646,7 @@ func wrapItems(items []json.RawMessage, env Envelope) []json.RawMessage {
 // wrapped, if the style wraps) item bytes:
 //
 //   - plain:   `{"items":[…],"hasMore":b(,"nextCursor":"…")}`, or a flat
-//     `[…]` when bare (marshalEnvelope / marshalFlatArray, unchanged);
+//     `[…]` when bare;
 //   - wrapped: `{"<Key>":[…]}`, plus `,"<Pagination>":{"hasNextPage":b
 //     (,"nextCursor":"…")}` ONLY when the edge is not bare AND env.Pagination
 //     is set. A wrapped list is never null and never a bare array.

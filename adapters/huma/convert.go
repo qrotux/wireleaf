@@ -38,7 +38,7 @@ func convertNode(n *apidoc.IRNode) (*humav2.Schema, error) {
 	// Opaque: the bytes ARE the fact. A zero typed Schema whose Extensions hold
 	// the decoded fragment marshals back to exactly that fragment (huma copies
 	// extensions over the typed fields last), at the documented cost that huma
-	// does not validate against it — spec §5a's marked trade-off.
+	// does not validate against it.
 	if n.Kind == apidoc.KindOpaque {
 		var m map[string]any
 		if err := json.Unmarshal(n.Opaque, &m); err != nil {
@@ -141,7 +141,7 @@ func convertNode(n *apidoc.IRNode) (*humav2.Schema, error) {
 	//
 	// An enum of exactly [null] closes it: huma's enum check is a plain
 	// membership test that runs for every type, so only a real null matches.
-	// DRIFT: the served document carries "enum":[null] on such arms. In JSON
+	// The served document therefore carries "enum":[null] on such arms. In JSON
 	// Schema 2020-12 {"type":"null"} and {"type":"null","enum":[null]} are
 	// semantically identical, so the document stays correct — it is just more
 	// explicit than the IR.
@@ -185,8 +185,7 @@ func convertNode(n *apidoc.IRNode) (*humav2.Schema, error) {
 	}
 
 	// Extensions pass through document-only. contentMediaType joins them: huma's
-	// Schema has no such field, and an inline key is the correct OAS output
-	// (plan decision #11).
+	// Schema has no such field, and an inline key is the correct OAS output.
 	if len(n.Extensions) > 0 || n.ContentMediaType != "" {
 		s.Extensions = make(map[string]any, len(n.Extensions)+1)
 		for k, v := range n.Extensions {

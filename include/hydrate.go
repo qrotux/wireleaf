@@ -2,13 +2,9 @@
 // materialize, plus HasInclude. These are the call-site entry points for
 // endpoint handlers; the package stays transport-free and DB-free.
 //
-// Design:
-//   - The "400-before-fetch" invariant: ResolvePlan always runs FIRST. A bad
-//     include/exclude string returns an *Error before any fetch closure is invoked.
-//   - Offset-vs-cursor is NOT the facade's concern. The RootFetcher closure owns
-//     the SQL and the cursor-select invariant; HydrateByQuery is mode-agnostic.
-//   - HydrateByID handles the 404 path: fetch returning (nil, nil) → *Error{404}.
-//   - HydrateEntity is for POST/PATCH: no root-fetch, doc is already in memory.
+// The "400-before-fetch" invariant holds across all three: ResolvePlan runs
+// FIRST, so a bad include/exclude string returns an *Error before any fetch
+// closure is invoked.
 
 package include
 
@@ -17,16 +13,14 @@ import (
 	"fmt"
 )
 
-// ------------------------------------------------------------------ Types
-
 // QueryArgs carries the pagination and filter parameters for a list query.
 // The endpoint-supplied RootFetcher receives these verbatim; the facade does
 // not interpret them.
 //
 // Where is the graph-checked filter — the output of ResolveFilter, carrying
 // SQL-side names only — passed to the RootFetcher verbatim; nil means no
-// filter. (The v0 opaque string is gone: an application-owned filter travels
-// in the RootFetcher closure, not in QueryArgs.)
+// filter. An application-owned filter travels in the RootFetcher closure, not
+// in QueryArgs.
 type QueryArgs struct {
 	Sort  string
 	Limit int
@@ -37,16 +31,9 @@ type QueryArgs struct {
 	Where  ResolvedFilter
 }
 
-// RootFetcher is the endpoint's root-fetch closure. It owns the SQL (including
-// the cursor-select invariant when operating in cursor mode). The facade calls
-// it AFTER a successful ResolvePlan so any DB round-trip is skipped on a bad
-// ?include= string.
-//
-// Returns:
-//   - docs: the fetched root documents (may be empty, must not be nil on success).
-//   - total: the total row count (meaningful for offset pagination; 0 is fine for cursor).
-//   - hasMore: whether there is a next page.
-//   - err: non-nil aborts the hydration.
+// RootFetcher is the endpoint's root-fetch closure; it owns the SQL, including
+// the cursor-select invariant in cursor mode. docs may be empty but must not be
+// nil on success; total is meaningful for offset pagination only.
 type RootFetcher func(ctx *Ctx, q QueryArgs) (docs []any, total int, hasMore bool, err error)
 
 // QueryResult is the materialized list result returned by HydrateByQuery.
@@ -75,8 +62,6 @@ type ListPage struct {
 	NextCursor string
 	PrevCursor string
 }
-
-// ------------------------------------------------------------------ shared pipeline
 
 // budgetCheck refuses a page whose static row estimate would exceed the plan's
 // budget: the estimate is per document, so a known page size lets the facade
@@ -133,13 +118,8 @@ func listFetcherOf(fetch RootFetcher) ListFetcher {
 	}
 }
 
-// ------------------------------------------------------------------ HydrateByQuery
-
-// HydrateByQuery is the list facade: ResolvePlan first, so a bad include
-// string returns before fetch is ever called, then the shared list pipeline.
-//
-// Offset-vs-cursor is the caller's concern: the RootFetcher encapsulates the
-// SQL and the cursor-select invariant. This facade is mode-agnostic.
+// HydrateByQuery is the list facade: ResolvePlan, then the shared list
+// pipeline. It is pagination-mode-agnostic; the RootFetcher owns that.
 func HydrateByQuery(
 	root Resource,
 	q QueryArgs,
@@ -160,13 +140,8 @@ func HydrateByQuery(
 	return res, plan, nil
 }
 
-// ------------------------------------------------------------------ HydrateByID
-
-// HydrateByID is the single-resource-by-id facade: ResolvePlan first
-// (400-before-fetch), then the caller's fetch; a nil doc is the 404 path.
-//
-// This facade is for detail endpoints. The fetch closure owns the DB call; the
-// facade never touches a database.
+// HydrateByID is the single-resource-by-id facade: ResolvePlan, then the
+// caller's fetch; a nil doc is the 404 path.
 func HydrateByID(
 	root Resource,
 	id string,
@@ -194,10 +169,8 @@ func HydrateByID(
 	return raw, plan, nil
 }
 
-// ------------------------------------------------------------------ HydrateEntity
-
 // HydrateEntity is the already-loaded-doc facade (POST/PATCH): no root fetch,
-// the doc is in memory. Returns the materialized bytes and the resolved plan.
+// the doc is in memory.
 func HydrateEntity(
 	root Resource,
 	doc any,
@@ -217,8 +190,6 @@ func HydrateEntity(
 	return raw, plan, nil
 }
 
-// ------------------------------------------------------------------ HasInclude
-
 // HasInclude reports whether plan.Children contains a child with the given
 // EdgeKey. Handlers branch on it to know whether a specific include resolved.
 // (*PlanNode).Get returns that child node itself — use it when the handler
@@ -227,8 +198,6 @@ func HydrateEntity(
 func HasInclude(plan *PlanNode, edgeKey string) bool {
 	return plan.Get(edgeKey) != nil
 }
-
-// ------------------------------------------------------------------ helpers
 
 // notFound returns a 404 *Error for the given resource path/id.
 func notFound(path string) *Error {

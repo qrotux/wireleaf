@@ -73,7 +73,7 @@ const NamingOverrideName = "RenamedTop"
 // ---------------------------------------------------------------------------
 
 // EmbeddedBase is embedded WITHOUT a json tag: encoding/json promotes its
-// fields into the parent, and so must the reflector (spec §5c).
+// fields into the parent, and so must the reflector.
 type EmbeddedBase struct {
 	BaseField string `json:"baseField"`
 }

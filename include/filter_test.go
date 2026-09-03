@@ -437,8 +437,6 @@ func TestResolveFilterDefaultDepth(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ subqueries
-//
 // MaxFilterSubqueries bounds the to-many hops of the WHOLE tree, where
 // MaxFilterMany bounds those of one path: four independent one-hop conditions
 // are four correlated subqueries, and nothing else in Limits counts them.

@@ -2,8 +2,6 @@ package include
 
 import "testing"
 
-// ------------------------------------------------------------------ toy graph
-//
 // A minimal, self-contained Resource implementation used ONLY by resolve_test
 // and policy_test. It deliberately does not depend on toygraph_test.go.
 
@@ -52,9 +50,7 @@ func errCode(err error) Code {
 	return ""
 }
 
-// ------------------------------------------------------------------ scenarios
-
-// Scenario 1: empty client tree → only the root's defaults are expanded.
+// Empty client tree → only the root's defaults are expanded.
 func TestResolveEmptyTreeExpandsOnlyDefaults(t *testing.T) {
 	B := &tRes{name: "B"}
 	A := &tRes{
@@ -105,7 +101,7 @@ func TestResolveEmptyTreeExpandsOnlyDefaults(t *testing.T) {
 	}
 }
 
-// Scenario 2: a client include naming an unknown edge → INVALID_INCLUDE.
+// A client include naming an unknown edge → INVALID_INCLUDE.
 func TestResolveClientUnknownEdge(t *testing.T) {
 	A := &tRes{name: "A", edges: map[string]Edge{}}
 	_, err := ResolvePlan(A, IncludeTree{"nope": IncludeTree{}}, nil, testOptions)
@@ -114,7 +110,7 @@ func TestResolveClientUnknownEdge(t *testing.T) {
 	}
 }
 
-// Scenario 3: a client include on an existing-but-non-includable edge → INVALID_INCLUDE.
+// A client include on an existing-but-non-includable edge → INVALID_INCLUDE.
 func TestResolveClientNonIncludableEdge(t *testing.T) {
 	B := &tRes{name: "B"}
 	A := &tRes{
@@ -129,7 +125,7 @@ func TestResolveClientNonIncludableEdge(t *testing.T) {
 	}
 }
 
-// Scenario 4: a client include deeper than MaxDepth → INCLUDE_TOO_DEEP.
+// A client include deeper than MaxDepth → INCLUDE_TOO_DEEP.
 // Self-edge chain a.a.a with MaxDepth:2.
 func TestResolveClientTooDeep(t *testing.T) {
 	A := &tRes{name: "A"}
@@ -144,7 +140,7 @@ func TestResolveClientTooDeep(t *testing.T) {
 	}
 }
 
-// Scenario 5: more client sibling edges than MaxNodes → INCLUDE_TOO_DEEP.
+// More client sibling edges than MaxNodes → INCLUDE_TOO_DEEP.
 func TestResolveMaxNodesExceeded(t *testing.T) {
 	B := &tRes{name: "B"}
 	A := &tRes{
@@ -162,7 +158,7 @@ func TestResolveMaxNodesExceeded(t *testing.T) {
 	}
 }
 
-// Scenario 6: a DEFAULT self-cycle terminates cleanly (no error, no infinite recursion).
+// A DEFAULT self-cycle terminates cleanly (no error, no infinite recursion).
 // A.defaults=[self], self→A (includable). The default-chain is seeded with "A",
 // so the self default re-entering A is cut at the first hop.
 func TestResolveDefaultCycleTerminates(t *testing.T) {
@@ -180,7 +176,7 @@ func TestResolveDefaultCycleTerminates(t *testing.T) {
 	}
 }
 
-// Scenario 7a: excluding an unknown path → INVALID_INCLUDE.
+// Excluding an unknown path → INVALID_INCLUDE.
 func TestResolveExcludeUnknownPath(t *testing.T) {
 	B := &tRes{name: "B"}
 	A := &tRes{
@@ -196,7 +192,7 @@ func TestResolveExcludeUnknownPath(t *testing.T) {
 	}
 }
 
-// Scenario 7b: excluding a real default child removes it from the plan.
+// Excluding a real default child removes it from the plan.
 func TestResolveExcludeRemovesDefaultChild(t *testing.T) {
 	B := &tRes{name: "B"}
 	A := &tRes{
@@ -214,8 +210,6 @@ func TestResolveExcludeRemovesDefaultChild(t *testing.T) {
 		t.Fatalf("excluded default child 'child' should be absent")
 	}
 }
-
-// ------------------------------------------------------------------ extra coverage
 
 // Args are carried through, `:`-prefix stripped, and a nested child survives.
 func TestResolveArgsCarriedThrough(t *testing.T) {
@@ -439,8 +433,6 @@ func TestDefaultOptionsValues(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ computed edges
-//
 // A computed edge has NO Target: its value is produced by application code.
 // It still occupies the ordinary edge namespace and passes through the same
 // Includable gate, arg validation and node accounting — but it is a plan LEAF
@@ -615,10 +607,8 @@ func TestComputedExcluded(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ PlanNode.Get
-
-// Get returns the DIRECT child with the given edge key, nil otherwise. It is
-// the typed sibling of HasInclude, which stays as-is.
+// Get returns the DIRECT child with the given edge key, nil otherwise — the
+// typed sibling of HasInclude.
 func TestPlanGet(t *testing.T) {
 	C := &tRes{name: "C"}
 	B := &tRes{name: "B", edges: map[string]Edge{
@@ -665,8 +655,6 @@ func TestPlanGet(t *testing.T) {
 		t.Errorf("nil.Get = %v, want nil", got)
 	}
 }
-
-// ------------------------------------------------------------------ in-array args
 
 // inArrayGraph returns a root with a single includable IN-ARRAY edge that also
 // (illegally, for a hand-built edge) declares a limit ceiling and a sort
@@ -718,8 +706,6 @@ func TestInArrayClientSortRejected(t *testing.T) {
 		}
 	}
 }
-
-// ------------------------------------------------------------------ default computed edge
 
 // A computed key listed in Defaults() plans as a computed LEAF with no client
 // include at all: the default expansion must not dereference its (absent)
@@ -846,8 +832,6 @@ func TestExcludeStrictRejectsRequiredEdge(t *testing.T) {
 		t.Errorf("author.avatar should have been pruned")
 	}
 }
-
-// ------------------------------------------------------------------ cost
 
 // costGraph: A --a(reverse, Limit 20)--> A, plus optional extra edges.
 func costGraph(extra map[string]Edge) *tRes {

@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-// ---------------------------------------------------------------------------
 // Toy graph for the engine (materialize) tests.
 //
 // The nodes are INLINE Resource implementations (toyRes) with pluggable
@@ -15,10 +14,6 @@ import (
 // imported it would create an import cycle.
 //
 // Type names are deliberately distinct from resolve_test.go's `tRes`.
-// ---------------------------------------------------------------------------
-
-// ------------------------------------------------------------------ row + wire types
-
 // toyARow is the "DB row" for the root node.
 type toyARow struct {
 	id   string
@@ -49,8 +44,6 @@ type toyBWire struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
 }
-
-// ------------------------------------------------------------------ toyRes
 
 // toyRes is a single configurable inline Resource used for every toy node.
 // The per-node behavior (scalar shape, id extraction, optional enrich) is
@@ -89,8 +82,6 @@ func (r *toyRes) Enrich(docs []any, ctx *Ctx) error {
 
 // Compile-time assertion.
 var _ Resource = (*toyRes)(nil)
-
-// ------------------------------------------------------------------ fakeReg
 
 // fakeReg is an in-memory Registry backed by canned rows. It lets the engine be
 // exercised without a database.
@@ -187,8 +178,6 @@ func (f *fakeReg) FetchByParents(node Resource) (FetchByParents, bool) {
 	}, true
 }
 
-// ------------------------------------------------------------------ graph builder
-
 // toyGraph bundles the assembled nodes and a registry preloaded with canned rows.
 type toyGraph struct {
 	A   *toyRes // root {id,name}
@@ -283,15 +272,12 @@ func buildToyGraph() *toyGraph {
 	return &toyGraph{A: A, B: B, Reg: reg}
 }
 
-// ------------------------------------------------------------------ smoke test
-
 // TestToyGraphWellFormed exercises the builder + fakeReg so this file compiles
 // and its behavior (boxing, id-order fetch, access-drop, envelope probe, bare
 // fetch-all) is pinned for the engine tests that depend on it.
 func TestToyGraphWellFormed(t *testing.T) {
 	g := buildToyGraph()
 
-	// --- graph shape ---
 	if g.A.Name() != "ToyA" || g.B.Name() != "ToyB" {
 		t.Fatalf("node names = %q/%q", g.A.Name(), g.B.Name())
 	}
@@ -317,7 +303,6 @@ func TestToyGraphWellFormed(t *testing.T) {
 		t.Errorf("toyB should be a leaf, got edges %v", g.B.Edges())
 	}
 
-	// --- Serialize produces the scalar wire struct (JSON-assertable) ---
 	raw, err := json.Marshal(g.A.Serialize(toyARow{id: "a1", name: "Alpha"}, nil))
 	if err != nil {
 		t.Fatalf("marshal toyA wire: %v", err)
@@ -331,7 +316,6 @@ func TestToyGraphWellFormed(t *testing.T) {
 
 	ctx := &Ctx{Registry: g.Reg}
 
-	// --- FetchByIDs: input-id order + access-drop of unknown ids ---
 	fi, ok := g.Reg.FetchByIDs(g.B)
 	if !ok {
 		t.Fatal("FetchByIDs(toyB) missing")
@@ -347,7 +331,6 @@ func TestToyGraphWellFormed(t *testing.T) {
 		t.Fatalf("FetchByIDs order = %q,%q, want b2,b1", rows[0].(toyBRow).id, rows[1].(toyBRow).id)
 	}
 
-	// --- FetchByParents envelope probe: limit 2 over 3 canned → hasMore, truncated ---
 	fp, ok := g.Reg.FetchByParents(g.B)
 	if !ok {
 		t.Fatal("FetchByParents(toyB) missing")
@@ -364,7 +347,6 @@ func TestToyGraphWellFormed(t *testing.T) {
 		t.Fatalf("enveloped kids = %v, want [b1 b2]", kids.Rows)
 	}
 
-	// --- FetchByParents bare / fetch-all: limit <= 0 → all, hasMore=false ---
 	resAll, err := fp(ctx, []string{"a1"}, EdgeQuery{Limit: 0})
 	if err != nil {
 		t.Fatalf("bare FetchByParents err: %v", err)
@@ -376,7 +358,6 @@ func TestToyGraphWellFormed(t *testing.T) {
 		t.Fatalf("bare fetch got %d, want 3", len(resAll["a1"].Rows))
 	}
 
-	// --- unknown parent → empty, no error ---
 	resNone, err := fp(ctx, []string{"ghost"}, EdgeQuery{Limit: 5})
 	if err != nil || len(resNone["ghost"].Rows) != 0 {
 		t.Fatalf("unknown parent: rows=%v err=%v", resNone["ghost"].Rows, err)

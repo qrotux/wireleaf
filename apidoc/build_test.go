@@ -194,7 +194,7 @@ func TestRegisterWrapperTypeAndDupPanic(t *testing.T) {
 	assertPanics(t, func() { c.RegisterWrapperType(at, "Other") })
 }
 
-// Two registries are independent — the whole point of retiring Default().
+// Two registries are independent.
 func TestRegistriesAreIndependent(t *testing.T) {
 	a, b := NewComponents(), NewComponents()
 	a.Add("Shared", RawFragment(map[string]any{"type": "object"}))

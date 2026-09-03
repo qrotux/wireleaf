@@ -7,7 +7,7 @@ import (
 
 // Verdict classifies a wire-struct field's nullability under the ONE policy
 // shared by graph.Compile's shape derivation and the reflector's
-// InterceptNullability hook (spec §5a). Bytes agree with the document because
+// InterceptNullability hook. Bytes agree with the document because
 // this is, by construction, the rule encoding/json already applies — with one
 // documented approximation: the omitempty => Optional arm assumes an omittable
 // kind (bool, numbers, string, pointer, interface, slice, map, array). On a
@@ -27,11 +27,11 @@ const (
 	VerdictNull                    // pointer w/o omitempty: present, may be null
 )
 
-// NullabilityPolicy decides a field's verdict. DefaultNullability is the v1
-// policy; the type exists so tests and future policies can substitute.
+// NullabilityPolicy decides a field's verdict; the type exists so tests can
+// substitute DefaultNullability.
 type NullabilityPolicy func(f reflect.StructField) Verdict
 
-// DefaultNullability is the v1 policy: a pointer without omitempty/omitzero
+// DefaultNullability is the policy: a pointer without omitempty/omitzero
 // => Null; omitempty or omitzero => Optional (absent, never null); else Plain.
 func DefaultNullability(f reflect.StructField) Verdict {
 	tag := f.Tag.Get("json")

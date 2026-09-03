@@ -18,7 +18,7 @@
 //     keyword, never a silent drop; "x-" keys land in Extensions. The one
 //     exception is a TYPELESS schema (interface{}, json.RawMessage), which has
 //     no IR kind at all: it folds into a single Opaque node whose bytes are the
-//     whole fragment (plan decision #9's escape hatch, taken deliberately).
+//     whole fragment.
 //
 // The package passes apidoc/reflectortest in full.
 package reflector
@@ -133,7 +133,7 @@ func (e *engine) collect(types []reflect.Type) error {
 			e.bindName(name, t)
 			return name
 		}),
-		// The POLICY owns nullability (spec §5a): strip whatever the engine
+		// The POLICY owns nullability: strip whatever the engine
 		// added, then re-derive it per field during conversion.
 		jsonschema.InterceptNullability(func(params jsonschema.InterceptNullabilityParams) {
 			if params.Schema != nil {
@@ -267,11 +267,11 @@ func (e *engine) convert(s *jsonschema.Schema, t reflect.Type, path string) (*ap
 	default:
 		// A typeless schema (interface{}, json.RawMessage) models "anything",
 		// and the IR has no kind for that — so this is the ONE place the
-		// reflector deliberately reaches for the Opaque escape hatch (plan
-		// decision #9). A bare one is the empty fragment; one carrying keywords
-		// folds them INTO the bytes, because the IR invariants forbid
-		// annotations ON an Opaque node, which makes the fragment the only
-		// representable shape. Nothing is dropped and nothing is refused.
+		// reflector deliberately reaches for the Opaque escape hatch. A bare
+		// one is the empty fragment; one carrying keywords folds them INTO the
+		// bytes, because the IR invariants forbid annotations ON an Opaque
+		// node, which makes the fragment the only representable shape. Nothing
+		// is dropped and nothing is refused.
 		raw, err := opaqueBytes(s)
 		if err != nil {
 			return nil, fmt.Errorf("reflector: %s: %w", path, err)
@@ -720,7 +720,7 @@ func tagName(tag string) string {
 }
 
 // ---------------------------------------------------------------------------
-// one-type helpers (v0 signatures)
+// one-type helpers
 // ---------------------------------------------------------------------------
 
 // Reflect reflects a single wire struct T into its flat OAS-3.1 object schema

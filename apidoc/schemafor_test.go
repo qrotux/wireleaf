@@ -1,11 +1,7 @@
 package apidoc
 
 // schemafor_test.go — the include-aware recompute spec, in-core over the stub
-// reflector. Ported from the v0 adapter suite (adapters/huma/schemafor_test.go)
-// onto the hand-built emitRes fixtures shared with emit_test.go.
-//
-// RECORDED DRIFT vs v0: SchemaFor returns a Schema (not map[string]any), and
-// the IR serializer OMITS an empty `required` rather than emitting `[]`.
+// reflector, on the hand-built emitRes fixtures shared with emit_test.go.
 
 import (
 	"errors"
@@ -17,7 +13,7 @@ import (
 )
 
 // allOptionalWire has only omitempty fields, so its recomputed base carries NO
-// required keys at all — the fixture for the empty-required drift.
+// required keys at all — the fixture for the omitted-`required` case.
 type allOptionalWire struct {
 	ID string `json:"id,omitempty"`
 }
@@ -70,8 +66,7 @@ func TestSchemaForInlinesNonEmptySubtree(t *testing.T) {
 		t.Errorf("inlined Author required = %v, want it to carry books", req)
 	}
 	// The inlined child's own leaf edge falls back to the static $ref envelope —
-	// which, over the IR, carries the OPTIONAL nextCursor (drift vs the v0 map
-	// envelope, which had none).
+	// which, over the IR, carries the OPTIONAL nextCursor.
 	wantBooks := envelopeOf(ref("Book"))
 	if got := prop(t, inner, "books"); !reflect.DeepEqual(got, wantBooks) {
 		t.Errorf("inlined Author.books = %v, want %v", got, wantBooks)
@@ -210,9 +205,7 @@ func TestSchemaForEmptyTreeIsScalarBase(t *testing.T) {
 	}
 }
 
-// DRIFT (recorded, Task 14): v0 pinned `required` to a non-nil empty slice so
-// the key was always present. Over the IR the serializer OMITS an empty
-// required entirely (Task 13 decision).
+// The serializer OMITS an empty `required` entirely rather than emitting `[]`.
 func TestSchemaForOmitsEmptyRequired(t *testing.T) {
 	node := &emitRes{name: "AllOptional", wire: allOptionalWire{}, edges: map[string]include.Edge{}}
 	s, err := SchemaFor(stubReflector{}, node, include.IncludeTree{}, include.Limits{})
@@ -329,7 +322,7 @@ func TestSchemaForPropagatesReflectorError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // A COMPUTED edge carries a nil Target func, so the Computed branch must come
-// BEFORE any Target-nil check: the v0 order rejected it as a wiring bug.
+// BEFORE any Target-nil check, which would otherwise reject it as a wiring bug.
 func TestSchemaForComputedRequired(t *testing.T) {
 	g := buildToyGraph()
 	g.Book.edges["stats"] = include.Edge{

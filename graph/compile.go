@@ -13,7 +13,7 @@ import (
 )
 
 // defaultEdgeLimit is the per-edge top-N applied to an enveloped to-many edge
-// that declares no Limit (spec §2).
+// that declares no Limit.
 const defaultEdgeLimit = 20
 
 // ------------------------------------------------------------------ error type
@@ -40,7 +40,7 @@ func (f Finding) String() string {
 }
 
 // CompileError is the single error Compile returns: it carries EVERY finding
-// of one run, never just the first (spec §1).
+// of one run, never just the first.
 type CompileError struct{ Findings []Finding }
 
 // Error joins all findings, one per line.
@@ -252,15 +252,11 @@ func (b *Builder) Compile() (*Graph, error) {
 			inDefaults[key] = true
 		}
 
-		// Required() IMPLIES default-included: the key is in the component's
-		// `required` set, and the engine only materializes edges of the plan's
-		// default ∪ client tree — so the ONLY legal configuration has every
-		// Required() edge in Defaults(). One legal outcome means CONSTRUCT it,
-		// not report it: required keys the application did not list are
-		// appended here, after the explicit defaults, in edge-declaration
-		// order (deterministic byte order). Mutating n.defaults is safe — the
-		// builder is dead — and cn.defaults is re-pointed so every later pass
-		// (default cycles, fetcher completeness, the engine itself) sees the
+		// Required() implies default-included (see NodeHandle.Defaults), and
+		// one legal outcome means CONSTRUCT it, not report it: unlisted
+		// required keys are appended after the explicit defaults in
+		// edge-declaration order. cn.defaults is re-pointed so every later
+		// pass (default cycles, fetcher completeness, the engine) sees the
 		// augmented list.
 		for _, eb := range edgeOrder[n] {
 			if eb.set.required && !inDefaults[eb.key] {
@@ -352,10 +348,9 @@ func (b *Builder) Compile() (*Graph, error) {
 // ------------------------------------------------------------------ node checks
 
 // checkNodeClosures reports the mandatory/nil problems of one node's
-// Wire/PrimaryKey/Enrich declarations. There are no type-mismatch findings any
-// more: the chained methods are typed by the handle's own Row/Wire parameters,
-// so a closure typed on another node's types is a Go COMPILE error, not a
-// runtime finding.
+// Wire/PrimaryKey/Enrich declarations. Type mismatches are not among them: the
+// chained methods are typed by the handle's own Row/Wire parameters, so a
+// closure typed on another node's types is a Go COMPILE error.
 func checkNodeClosures(fs *findingList, n *nodeSpec) {
 	requireClosure(fs, n.name, "", n.wireSet, n.wireFn == nil,
 		"Wire is required", fmt.Sprintf("Wire(nil) on node %s", n.name))
@@ -442,9 +437,8 @@ func buildEdge(
 		k.kind == include.KindReverse ||
 		k.kind == include.KindInArray
 
-	// (No Row-type mismatch findings here any more: EdgeBuilder[Row] types the
-	// ForeignKey/ForeignKeys/Guard closures by the parent's Row, so a mismatch
-	// is a Go compile error, not something Compile can ever see.)
+	// EdgeBuilder[Row] types the ForeignKey/ForeignKeys/Guard closures by the
+	// parent's Row, so a mismatch is a Go compile error, never a finding here.
 	if s.guardSet && s.guard == nil {
 		fs.add(name, key, "Guard(nil) on edge %s", key)
 	}
@@ -499,15 +493,10 @@ func buildEdge(
 	}
 
 	// --- Filterable ---------------------------------------------------------
-	// Legal where a SQL-side join or correlated subquery exists behind the
-	// edge: to-one (a join), reverse and forward to-many (an EXISTS with the
-	// quantifier the client puts on the hop — include.FilterStep.Quant, which
-	// ResolveFilter demands). In-array edges are positional splices into the
-	// parent's array with no relation behind them, computed edges have no
-	// target; both are inert declarations, and an inert declaration is a
-	// finding. Guard is a Go closure over the parent row; a SQL-side filter
-	// cannot honour it, so the pair would leak rows the include would have
-	// hidden.
+	// Legal only where a SQL-side join or correlated subquery exists behind
+	// the edge (see include.Edge.Filterable): an in-array edge is a positional
+	// splice with no relation behind it, a computed edge has no target, and a
+	// Guard is a Go closure no SQL-side filter can honour.
 	if s.filterable && (k.kind == include.KindInArray || k.kind == include.KindComputed) {
 		fs.add(name, key, "Filterable() is not valid on %s edges (to-one, reverse and to-many only)", k.kind)
 	}
@@ -552,7 +541,7 @@ func buildEdge(
 	// --- limit --------------------------------------------------------------
 	// The default ceiling is scoped to the kinds Limit is legal on (reverse +
 	// forward-hasMany). In-array edges load through the forward FetchIDs batch
-	// and EdgeQuery does not apply to them (spec §2), so a stamped ceiling
+	// and EdgeQuery does not apply to them, so a stamped ceiling
 	// would be inert noise; they compile to Limit 0.
 	limit := s.limit
 	enveloped := k.kind == include.KindReverse || k.kind == include.KindForwardHasMany
@@ -578,8 +567,8 @@ func buildEdge(
 		Required:   s.required,
 		Includable: s.includable,
 		Filterable: s.filterable,
-		// No FK FIELD NAME is carried at all: v1 reads forward FKs through the
-		// typed ForeignKey/ForeignKeys closures, never through a field name.
+		// No FK field name is carried: forward FKs are read through the typed
+		// ForeignKey/ForeignKeys closures, never through a field name.
 		Backref:       k.backref,
 		ArrayPath:     k.arrayPath,
 		SubField:      k.subField,
@@ -818,8 +807,8 @@ func checkInverse(fs *findingList, eb *edgeBuild, edgesByNode map[*nodeSpec]map[
 // ------------------------------------------------------------------ default cycles
 
 // checkDefaultCycles reports cycles in the graph formed by DEFAULT edges only
-// (v0's runtime guard, moved to compile time — spec §1). A default include that
-// loops back onto its own node would expand forever at plan time.
+// A default include that loops back onto its own node would expand forever at
+// plan time.
 func checkDefaultCycles(fs *findingList, nodes []*nodeSpec, edgesByNode map[*nodeSpec]map[string]*edgeBuild) {
 	const (
 		white = 0
@@ -1061,17 +1050,12 @@ func collectWireFields(t reflect.Type, depth int, inProgress map[reflect.Type]bo
 		embedded := f.Anonymous && tagName == "" && tag != "-" &&
 			elem != nil && elem.Kind() == reflect.Struct
 
-		// A col / sortCol tag on a field that is never serialized under its own name
-		// is inert, and an inert declaration is a finding. Checked BEFORE the
-		// embed recursion so an unexported embed is flagged too.
-		//
-		// TWO inert cases are NOT findings and are silently DROPPED: a field
-		// tagged `json:"-"` and an UNTAGGED exported field. Both are skipped
-		// further down before the whitelist is written, so their sortCol never
-		// reaches SortCols and no error is raised. Neither is caught here
-		// because the checks below key off the json tag, which those two cases
-		// do not carry in a distinguishable form — a client :sort() naming such
-		// a key simply misses the whitelist and falls back.
+		// A col / sortCol tag on a field that is never serialized under its
+		// own name is inert, and an inert declaration is a finding. Checked
+		// BEFORE the embed recursion so an unexported embed is flagged too.
+		// Two inert cases stay silent: a `json:"-"` field and an UNTAGGED
+		// exported field are skipped before the whitelist is written, so a
+		// client :sort() naming such a key simply misses it and falls back.
 		if colTag, present := colTagName(f); present {
 			switch {
 			case !f.IsExported():
@@ -1097,7 +1081,7 @@ func collectWireFields(t reflect.Type, depth int, inProgress map[reflect.Type]bo
 		}
 		// The whitelist is keyed by the json tag only: an untagged or
 		// json:"-" field carries no binding, and its tag (well-formed or not)
-		// is dropped without a finding, as sortCol always was.
+		// is dropped without a finding.
 		var col include.Column
 		var hasCol bool
 		if tagName != "" && tagName != "-" {
@@ -1132,11 +1116,11 @@ func colTagName(f reflect.StructField) (string, bool) {
 // cannot compare. Every finding names the tag the field actually carries.
 //
 // The legacy tag becomes a Column DIRECTLY and never enters the option
-// grammar. Rewriting it as `legacy + ",sort"` — what this used to do — made a
-// COMMA inside a sortCol value parse as an option list, so `sortCol:"a,filter"`
-// silently granted `filter`: a read grant on the value (see docs/include.md →
-// Filters) that no sortCol declaration ever asked for. A sortCol value is one
-// SQL name and nothing else; a comma anywhere in it is a finding.
+// grammar: routing it through `legacy + ",sort"` would make a COMMA inside a
+// sortCol value parse as an option list, so `sortCol:"a,filter"` would silently
+// grant `filter` — a read grant on the value (see docs/include.md → Filters)
+// that no sortCol declaration asked for. A sortCol value is one SQL name and
+// nothing else; a comma anywhere in it is a finding.
 func parseColTag(f reflect.StructField) (c include.Column, ok bool, errs []string) {
 	raw, hasCol := f.Tag.Lookup("col")
 	legacy, hasLegacy := f.Tag.Lookup("sortCol")

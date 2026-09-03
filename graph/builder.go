@@ -7,7 +7,7 @@ import (
 )
 
 // Builder accumulates declarations; single-goroutine, write-only, dead after
-// Compile (spec §1). All validation happens in Compile, never at declaration.
+// Compile. All validation happens in Compile, never at declaration.
 type Builder struct {
 	nodes []*nodeSpec
 	roots []*nodeSpec

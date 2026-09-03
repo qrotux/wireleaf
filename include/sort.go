@@ -11,16 +11,13 @@
 //     tolerant: an unknown or malformed client key falls back to the edge's
 //     default. Under SortStrict such a key never reaches this step — the plan
 //     is rejected at resolve time; under SortFallback the fallback applies.
-//   - ESCAPE HATCH: an edge may DECLARE "sort" as an ordinary EdgeArg
-//     (Edge.Args / graph.Arg("sort", …)), and graph.Compile permits it (only
-//     ":limit" is reserved). A declared arg SHORT-CIRCUITS the built-in branch
-//     in resolve.go: its own Validate decides, and neither the SortCols
-//     whitelist nor SortStrict is consulted at resolve time. That is deliberate
-//     — it is how an edge whose ordering is not a plain column (a computed
-//     ranking, a multi-key order) accepts a client sort at all. Declaring it
-//     means OWNING the validation. Resolution below still runs, so the value
-//     reaching EdgeQuery.Sort is still a SortCols lookup (or the edge default);
-//     the escape hatch relaxes acceptance, never the SQL-side safety.
+//   - ESCAPE HATCH: an edge may DECLARE "sort" as an ordinary EdgeArg. Its
+//     own Validate then decides acceptance and neither SortCols nor SortStrict
+//     is consulted at resolve time — the way an edge whose ordering is not a
+//     plain column (a computed ranking, a multi-key order) accepts a client
+//     sort at all. Resolution below still runs, so the value reaching
+//     EdgeQuery.Sort is still a SortCols lookup or the edge default: the hatch
+//     relaxes acceptance, never the SQL-side safety.
 //   - The resolved SQL-side key (with the '-' desc prefix re-applied) is what
 //     EdgeQuery.Sort carries. The client string NEVER reaches SQL text — it is
 //     only ever used as a map lookup key; the SQL-side value is a compile-time

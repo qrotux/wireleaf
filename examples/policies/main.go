@@ -6,7 +6,7 @@
 // with graph.Policies(...). ExcludeRequiredPolicy is resolve-time and lives on
 // include.Options; the other two are materialize-time and live on
 // include.Ctx.Policies. Every default is the permissive one, so a graph that
-// says nothing behaves exactly as it did before the policies existed:
+// declares no policy stays permissive:
 //
 //	ExcludeRequiredPolicy  what ?exclude= naming a Required() edge does
 //	                       ExcludeRequiredTolerant (default) | ExcludeRequiredStrict

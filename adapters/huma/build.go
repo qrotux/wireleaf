@@ -13,7 +13,7 @@ import (
 // BuildInto verifies c and makes its components part of the live huma OpenAPI
 // doc.
 //
-// Verify runs FIRST, always (spec §5b): an unresolved $ref must stop document
+// Verify runs FIRST, always: an unresolved $ref must stop document
 // assembly whichever path follows, and it is the one check that sees the whole
 // set at once.
 //

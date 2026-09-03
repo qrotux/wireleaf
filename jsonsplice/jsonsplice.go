@@ -15,23 +15,18 @@
 // object's frame: it copies each key and value byte-for-byte but drops
 // whitespace between members.
 //
-// These are the sanctioned tools for computed edges and post-hydration masking
-// (spec §3c): they let a materialized JSON document be amended after the fact
+// These are the sanctioned tools for computed edges and post-hydration
+// masking: they let a materialized JSON document be amended after the fact
 // without a round-trip through a decoder that would reorder keys and re-escape
 // strings.
 //
-// Errors: unlike ad-hoc splicing helpers that silently return the input
-// unchanged, every function here validates the document FRAME and reports
-// malformed input as an error — input that is not a JSON object (or, for
-// [Elements], not a JSON array), an unterminated string, an unbalanced
-// container, a missing colon, a misplaced comma (leading, trailing, or
-// doubled), a duplicate top-level key, a top-level scalar that is not
-// true/false/null/number, or trailing bytes after the top-level value.
-// Nested containers are checked for balance and string termination only;
-// their contents are copied through verbatim. Run json.Valid first if you
-// need full validation of a document that did not come from a marshaler.
-// An absent key is NOT an error: it is a no-op ([Delete]), an append
-// ([Splice], [InsertAfter]), or ok=false ([Member]).
+// Errors: every function validates the document FRAME (container balance,
+// string termination, colons and commas, duplicate top-level keys, trailing
+// bytes) and reports malformed input as an error; nested containers are
+// checked for balance and termination only, their contents copied through
+// verbatim. Run json.Valid first for full validation of a document that did
+// not come from a marshaler. An absent key is NOT an error: it is a no-op
+// ([Delete]), an append ([Splice], [InsertAfter]), or ok=false ([Member]).
 package jsonsplice
 
 import (
@@ -360,10 +355,11 @@ func Elements(arr []byte) ([][]byte, error) {
 // encodeKey returns the raw JSON string bytes for key.
 //
 // It goes through json.Encoder with SetEscapeHTML(false), NOT json.Marshal:
-// Marshal escapes '<', '>' and '&' into </>/&, which would make a
-// spliced key differ byte-for-byte from the same key written by the response
-// encoder (which also escapes nothing — see the adapter's jsonFormat). Encode
-// appends a newline, which is trimmed back off. Encoding a string cannot fail.
+// Marshal escapes '<', '>' and '&' as \u003c, \u003e and \u0026, which would
+// make a spliced key differ byte-for-byte from the same key written by the
+// response encoder (which also escapes nothing — see the adapter's
+// jsonFormat). Encode appends a newline, which is trimmed back off. Encoding
+// a string cannot fail.
 func encodeKey(key string) []byte {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

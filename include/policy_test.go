@@ -46,8 +46,6 @@ func assertInvalidInclude(t *testing.T, err error, wantPath string) {
 	}
 }
 
-// ------------------------------------------------------------------ SortPolicy
-
 // Under SortStrict an unknown :sort() key fails at resolve time, at "edge:sort".
 func TestSortStrict_UnknownKeyRejected(t *testing.T) {
 	root := policyRoot(func(e *Edge) { e.Sort = "postedAt"; e.SortCols = policySortCols })
@@ -112,8 +110,6 @@ func TestSortFallback_UnknownKeyAccepted(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ ArgPolicy
-
 // Under ArgsStrict an undeclared argument fails the plan at "path:arg".
 func TestArgsStrict_UndeclaredRejected(t *testing.T) {
 	root := policyRoot()
@@ -154,8 +150,6 @@ func TestArgsStrict_BuiltinLimitPasses(t *testing.T) {
 		t.Errorf("Args[limit] = %#v, want int 5 (coerced at plan time)", got)
 	}
 }
-
-// ------------------------------------------------------------------ :limit coercion
 
 // A non-integer, out-of-range or multi-value :limit fails the plan at
 // "path:limit" — under BOTH arg policies (the built-in is never tolerated raw).
@@ -224,8 +218,6 @@ func TestLimitOnBareEdge_Rejected(t *testing.T) {
 	_, err := ResolvePlan(root, tree, nil, DefaultOptions)
 	assertInvalidInclude(t, err, "reviews:limit")
 }
-
-// ------------------------------------------------------------------ EdgeArg.Validate
 
 // A declared arg with a passing validator reaches PlanNode.Args.
 func TestEdgeArgValidate_Pass(t *testing.T) {
@@ -316,8 +308,6 @@ func TestArgsValidatedAtNestedPath(t *testing.T) {
 	_, err := ResolvePlan(root, tree, nil, DefaultOptions)
 	assertInvalidInclude(t, err, "reviews.comments:tags")
 }
-
-// ------------------------------------------------------------------ built-ins by edge kind (review fixes, 2026-09-01)
 
 // The built-ins are rejected on edge kinds whose loading contract cannot
 // honour them — an accepted-and-ignored :limit/:sort would be a silent no-op.

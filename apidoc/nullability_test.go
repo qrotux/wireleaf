@@ -33,7 +33,7 @@ func TestNullabilityVerdicts(t *testing.T) {
 	}
 }
 
-// Pins that the policy IS the rule encoding/json applies (spec §5a).
+// Pins that the policy IS the rule encoding/json applies.
 func TestNullabilityMatchesEncodingJSON(t *testing.T) {
 	b, err := json.Marshal(nullFixture{Plain: "x"})
 	if err != nil {

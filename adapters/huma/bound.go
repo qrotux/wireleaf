@@ -1,14 +1,5 @@
 package huma
 
-// bound.go — the per-resource facade.
-//
-// Bind ties ONE graph node to ONE wire type W and hands back the value a
-// handler closes over: the resource for the document decorators, the
-// include.Hydrator for the engine calls, and the error mapping onto huma's
-// status errors. Everything a client can send arrives as ListQuery and is
-// validated by include.ResolveInputs — never by the huma tags, which carry
-// only the parameter names.
-
 import (
 	"context"
 	"errors"
@@ -46,11 +37,7 @@ func Bind[W any](a *API, node string) *Bound[W] {
 	if got, want := apidoc.DerefType(reflect.TypeOf(sample)), reflect.TypeFor[W](); got != want {
 		panic(fmt.Sprintf("adapters/huma: Bind: wire type mismatch for node %q: graph declares %v, Bind asked for %v", node, got, want))
 	}
-	// IDEMPOTENT PER (node, W), not per W: two Binds of the same pair register
-	// once, while a SECOND node declaring the same wire type still reaches
-	// RegisterNode — where apidoc refuses to remap Node[W] onto another
-	// component name. Skipping it there would document the second node's
-	// payloads as a $ref to the first node's component.
+	// Idempotent per (node, W), not per W — see API.bindings.
 	wrapper := reflect.TypeFor[Node[W]]()
 	if key := (bindKey{node: node, wrapper: wrapper}); !a.bindings[key] {
 		RegisterNode[W](a.c, node)

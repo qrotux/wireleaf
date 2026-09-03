@@ -21,11 +21,9 @@ func fixture() Schema {
 	})
 }
 
-// TestDSLRequiredReplaces — Required REPLACES the required set.
-//
-// DRIFT from v0: v0 emitted the caller's argument order ([note id]); the IR
-// derives `required` from the Prop.Required flags, so the list follows PROPERTY
-// order. The SET is what the verb promises, and it is unchanged.
+// TestDSLRequiredReplaces — Required REPLACES the required set. The emitted
+// list follows PROPERTY order, because the IR derives it from the Prop.Required
+// flags; the SET is what the verb promises.
 func TestDSLRequiredReplaces(t *testing.T) {
 	m := fixture().Required("note", "id").Map()
 	if got := m["required"]; !reflect.DeepEqual(got, []any{"id", "note"}) {
@@ -37,10 +35,9 @@ func TestDSLRequiredReplaces(t *testing.T) {
 // list survives (in order), new keys land at the end, and a key already required
 // is not duplicated. The contrast with TestDSLRequiredReplaces above is the whole
 // point: confusing the two collapses a merged required list to its last writer.
-//
-// DRIFT from v0: same as Required — the emitted list is in property order
-// ([count id note]) rather than kept-then-appended ([id count note]). What the
-// verb guarantees, that the pre-existing members survive, still holds.
+// The emitted list is in property order ([count id note]), not
+// kept-then-appended; what the verb guarantees is that the pre-existing members
+// survive.
 func TestDSLRequireAlsoAppends(t *testing.T) {
 	m := fixture().RequireAlso("note", "id").Map()
 	if got := m["required"]; !reflect.DeepEqual(got, []any{"count", "id", "note"}) {
@@ -234,10 +231,10 @@ func TestCombinators(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// v1: Set over the typed IR
+// Set over the typed IR
 // ---------------------------------------------------------------------------
 
-// TestSetTypedPaths — Set walks TYPED nodes now: structural segments descend
+// TestSetTypedPaths — Set walks TYPED nodes: structural segments descend
 // (properties.<name>, items, anyOf.<i>), and the final segment lands in its
 // typed field with a value-type check. The point of the check is that a
 // document bug becomes a declaration-time panic instead of a wrong document.
@@ -324,8 +321,8 @@ func TestSetPanics(t *testing.T) {
 	assertPanicsWith(t, "[count id note owner]", func() { fixture().Set("properties.nope.x", 1) })
 }
 
-// TestSetSplicesSchemaValue — passing a Schema splices its IR node directly.
-// This is what retires RefPrefix string concatenation at composition sites.
+// TestSetSplicesSchemaValue — passing a Schema splices its IR node directly,
+// so composition sites never concatenate RefPrefix strings.
 func TestSetSplicesSchemaValue(t *testing.T) {
 	s := fixture().Set("properties.owner", RefTo("Account"))
 	if n := s.mustProp("owner").Schema; n.Kind != KindRef || n.Ref != "Account" {
@@ -343,7 +340,7 @@ func TestSetSplicesSchemaValue(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// v1: new verbs
+// new verbs
 // ---------------------------------------------------------------------------
 
 func TestDSLEnum(t *testing.T) {
@@ -397,8 +394,8 @@ func TestDSLNullableIdempotent(t *testing.T) {
 
 // TestDSLNullableOpaqueProperty — Nullable must never be a silent no-op. An
 // Opaque property cannot have "null" folded into a type it does not model, so
-// it takes the anyOf wrap (what v0 did); the wrap makes the node a combinator,
-// so a second Nullable is idempotent through the normal path.
+// it takes the anyOf wrap; the wrap makes the node a combinator, so a second
+// Nullable is idempotent through the normal path.
 func TestDSLNullableOpaqueProperty(t *testing.T) {
 	base := func() Schema {
 		return RawFragment(map[string]any{

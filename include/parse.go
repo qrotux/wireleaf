@@ -57,17 +57,14 @@ func ParseInclude(raw string) (IncludeTree, error) {
 			continue
 		}
 
-		// Split on "." to get the nesting path segments.
 		segStrs := strings.Split(token, ".")
 		segments, err := parseSegments(segStrs)
 		if err != nil {
 			return nil, err
 		}
 
-		// Walk/create the tree, attaching args into each node's child subtree.
 		cursor := root
 		for _, seg := range segments {
-			// Get or create the child subtree for this edge name.
 			// A non-":" key always holds an IncludeTree (arg keys carry the ":"
 			// prefix, and nameRE bars ":" from segment names), so the assertion
 			// never fails on an existing entry.
@@ -77,12 +74,11 @@ func ParseInclude(raw string) (IncludeTree, error) {
 				cursor[seg.name] = childTree
 			}
 
-			// Attach args into the child subtree (keys prefixed with ":").
 			for argName, argVal := range seg.args {
 				argKey := ":" + argName
 				if existing, ok := childTree[argKey]; ok {
-					// Conflict: same arg with different value (values are string
-					// or []string, so DeepEqual is plain value equality).
+					// Values are string or []string, so DeepEqual is plain
+					// value equality.
 					if !reflect.DeepEqual(existing, argVal) {
 						return nil, NewError(INVALID_INCLUDE, "conflicting arg: "+argKey)
 					}
@@ -126,8 +122,6 @@ func ParseExclude(raw string) ([][]string, error) {
 	}
 	return result, nil
 }
-
-// ------------------------------------------------------------------ internal
 
 // parsedSegment holds the name and parsed args for one dot-separated segment.
 type parsedSegment struct {

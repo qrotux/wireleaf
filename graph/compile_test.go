@@ -151,7 +151,7 @@ func edgeCase(kind func() EdgeKind, cfgs ...bkCfg) func(b *Builder) {
 	}
 }
 
-// ------------------------------------------------------------------ AC: every finding class
+// ------------------------------------------------------------------ every finding class
 
 func TestCompileFindingClasses(t *testing.T) {
 	cases := []struct {
@@ -379,13 +379,6 @@ func TestCompileFindingClasses(t *testing.T) {
 			},
 			want: "Required() is only valid on to-one edges",
 		},
-		// (13b, retired): a Required() edge left out of Defaults() is no longer
-		// a finding — Compile APPENDS it to Defaults (the only legal
-		// configuration is constructed, not reported). Pinned by
-		// TestCompileAutoDefaultsRequiredEdges.
-		// (14) — the "typed option built with the wrong Row" finding classes are
-		// GONE: NodeHandle/EdgeBuilder type the closures by the node's own
-		// Row/Wire, so a mismatch no longer compiles at the Go level.
 		{
 			name: "Wire missing",
 			build: func(b *Builder) {
@@ -574,7 +567,7 @@ type embSortWire struct {
 	ID           string `json:"id"`
 }
 
-// ------------------------------------------------------------------ AC: all problems in one run
+// ------------------------------------------------------------------ all problems in one run
 
 func TestCompileAggregatesAllFindings(t *testing.T) {
 	fs := compileFindings(t, func(b *Builder) {
@@ -611,7 +604,7 @@ func TestCompileErrorMessageJoinsFindings(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ AC: shape derivation
+// ------------------------------------------------------------------ shape derivation
 
 type shapeRow struct{ ID string }
 
@@ -780,11 +773,10 @@ func TestCompileDerivesSortCols(t *testing.T) {
 	}
 }
 
-// sortEdgeRow/sortEdgeWire carry the whitelist edge cases the deleted
-// include-side sortCol unit test pinned: an untagged field and a `json:"-"` field
-// are NOT sortable even when they carry a sortCol tag, a comma-suffixed json
-// tag keys the whitelist on the name BEFORE the comma, and an untagged sortCol
-// field never reaches the map.
+// sortEdgeRow/sortEdgeWire carry the whitelist edge cases: an untagged field
+// and a `json:"-"` field are NOT sortable even when they carry a sortCol tag,
+// and a comma-suffixed json tag keys the whitelist on the name BEFORE the
+// comma.
 type sortEdgeRow struct{ ID string }
 
 type sortEdgeWire struct {
@@ -796,8 +788,6 @@ type sortEdgeWire struct {
 	CreatedAt *string `json:"createdAt,omitempty" sortCol:"created_at"`
 }
 
-// TestCompileSortColsSkipsUnsortableFields carries over the deleted include
-// sortCol-whitelist assertions now that graph.Compile owns the walk.
 func TestCompileSortColsSkipsUnsortableFields(t *testing.T) {
 	b := NewBuilder()
 	book := okBook(b)
@@ -850,10 +840,10 @@ func TestDeclaredSortArgStaysLegal(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ AC: happy path
+// ------------------------------------------------------------------ happy path
 
-// happyGraph builds the spec §1 sketch: Book/Author/Tag/Review + a computed
-// edge, all binds, Book as root.
+// happyGraph builds Book/Author/Tag/Review + a computed edge, all binds, Book
+// as root.
 func happyGraph(t *testing.T) *Graph {
 	t.Helper()
 	b := NewBuilder()
@@ -1003,7 +993,7 @@ func TestCompileHappyPath(t *testing.T) {
 }
 
 // In-array edges load through the forward FetchIDs batch and EdgeQuery does
-// not apply to them (spec §2), so they get NO default ceiling.
+// not apply to them, so they get NO default ceiling.
 func TestCompileInArrayEdgeHasNoDefaultLimit(t *testing.T) {
 	b := NewBuilder()
 	book, tag := okBook(b), okTag(b)
@@ -1039,7 +1029,7 @@ func TestCompileDocExternal(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ AC: Registry
+// ------------------------------------------------------------------ Registry
 
 func TestGraphImplementsRegistry(t *testing.T) {
 	g := happyGraph(t)
@@ -1059,7 +1049,7 @@ func TestGraphImplementsRegistry(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ AC: second Compile panics
+// ------------------------------------------------------------------ second Compile panics
 
 func TestSecondCompilePanics(t *testing.T) {
 	b := NewBuilder()
@@ -1077,13 +1067,11 @@ func TestSecondCompilePanics(t *testing.T) {
 	t.Error("second Compile did not panic")
 }
 
-// ------------------------------------------------------------------ AC: typed→boxed seams
+// ------------------------------------------------------------------ typed→boxed seams
 //
-// These pin the seams that used to be covered by graph/define_test.go and
-// graph/registry_test.go (both deleted with the v0 API). The behaviour they
-// assert now lives in builder.go (Wire/Enrich boxing), graph.go
+// These pin the boxing seams: builder.go (Wire/Enrich), graph.go
 // (compiledNode.Serialize/Enrich + the Registry lookups) and fetch.go
-// (FetchIDs/FetchParents boxing).
+// (FetchIDs/FetchParents).
 
 type boxRow struct{ ID string }
 
@@ -1350,8 +1338,6 @@ func TestUnboundNodeLookupsAbsent(t *testing.T) {
 		t.Error("FetchByParents should be absent for an unbound node")
 	}
 }
-
-// ------------------------------------------------------------------ review fixes (2026-09-01)
 
 // Required()+Guard() on one edge guarantees responses that violate the
 // published component (guard-false → null under a required key), so Compile

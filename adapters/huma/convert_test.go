@@ -267,7 +267,7 @@ func TestToHumaFieldByField(t *testing.T) {
 		{"contentMediaType", &apidoc.IRNode{Kind: apidoc.KindScalar, Types: []string{"string"}, ContentMediaType: "image/png"},
 			func(t *testing.T, s *humav2.Schema) {
 				// huma.Schema has no field: the inline extension key is the
-				// correct OAS output (plan decision #11).
+				// correct OAS output.
 				if s.Extensions["contentMediaType"] != "image/png" {
 					t.Fatalf("extensions=%v", s.Extensions)
 				}

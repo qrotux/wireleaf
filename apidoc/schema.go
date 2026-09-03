@@ -22,17 +22,14 @@ import (
 // reference; the convention is single-owner per node).
 type Schema struct{ n *IRNode }
 
-// IR exposes the underlying typed node. Doc-layer internals (component
-// assembly, emit) consume this; it is the replacement for the v0 habit of
-// reaching into the raw map.
+// IR exposes the underlying typed node.
 func (s Schema) IR() *IRNode { return s.n }
 
 // Map renders the schema as a generic OAS-3.1 fragment.
 //
-// DRIFT from v0: the returned map is a DETACHED COPY produced by a JSON round
-// trip (v0 returned the live backing map, so callers could mutate through it).
-// Two consequences: writes to the result are lost, and every number comes back
-// as float64. Reach for IR() when you need to mutate or need exact types.
+// The returned map is a DETACHED COPY produced by a JSON round trip: writes to
+// it are lost, and every number comes back as float64. Reach for IR() when you
+// need to mutate or need exact types.
 func (s Schema) Map() map[string]any { return s.n.mapAny() }
 
 // RawFragment wraps a hand-built OAS-3.1 fragment, converting it to typed IR.
@@ -57,8 +54,8 @@ func (s Schema) Map() map[string]any { return s.n.mapAny() }
 //
 // Property ORDER: a Go map has none, so properties are ordered by SORTED key.
 //
-// Panics on an unconvertible fragment — v0's contract is panic-at-declaration,
-// never a silent half-built document.
+// Panics on an unconvertible fragment: a declaration bug stops the build rather
+// than yielding a silent half-built document.
 func RawFragment(m map[string]any) Schema {
 	n, err := fragmentToIR(m)
 	if err != nil {
@@ -72,9 +69,9 @@ func RawFragment(m map[string]any) Schema {
 // reference made from inside the fragment still takes part in components
 // assembly's dangling-ref check.
 //
-// It is the escape-hatch constructor of spec §5a, for a producer that already
-// holds bytes and whose shape the typed IR does not model — a reflector folding
-// a TYPELESS schema, say. Prefer RawFragment when a map is at hand;
+// It is the escape hatch for a producer that already holds bytes and whose
+// shape the typed IR does not model — a reflector folding a TYPELESS schema,
+// say. Prefer RawFragment when a map is at hand;
 // reach for this only when the bytes themselves are the fact to preserve.
 //
 // Unlike RawFragment it returns an error instead of panicking: its callers are

@@ -1,6 +1,5 @@
 // The tests live in package crosscheck_test on purpose: everything a consumer
-// (Task 20's conformance table) touches is exported, and an external test
-// package is the proof.
+// touches is exported, and an external test package is the proof.
 package crosscheck_test
 
 import (
@@ -75,9 +74,8 @@ func TestCompileRejectsBadSamples(t *testing.T) {
 	}
 }
 
-// TestFormatIsAsserted pins the controller decision: "format" is an annotation
-// under 2020-12, and this validator asserts it. Without AssertFormat the bad
-// sample would read green.
+// TestFormatIsAsserted pins that "format", an annotation under 2020-12, is
+// asserted here: without AssertFormat the bad sample would read green.
 func TestFormatIsAsserted(t *testing.T) {
 	comps := map[string]apidoc.Schema{
 		"Id": apidoc.RawFragment(map[string]any{"type": "string", "format": "uuid"}),
@@ -94,8 +92,7 @@ func TestFormatIsAsserted(t *testing.T) {
 	}
 }
 
-// TestContentEncodingIsAsserted covers the AssertContent half of the same
-// decision.
+// TestContentEncodingIsAsserted covers the AssertContent half of the same rule.
 func TestContentEncodingIsAsserted(t *testing.T) {
 	comps := map[string]apidoc.Schema{
 		"Blob": apidoc.RawFragment(map[string]any{

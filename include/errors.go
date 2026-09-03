@@ -65,20 +65,15 @@ const (
 	// the parameter and the value ("limit=500").
 	INVALID_PAGINATION Code = "INVALID_PAGINATION"
 
-	// FILTER_TOO_DEEP covers both filter size limits, as INCLUDE_TOO_DEEP does
-	// for includes: a condition path longer than Limits.MaxFilterDepth, a path
-	// crossing more than Limits.MaxFilterMany to-many hops, and a tree with
-	// more than Limits.MaxFilterNodes conditions and groups (Path is empty).
-	// A too-deep path is refused before any hop is checked, so both its
-	// segment COUNT and each segment's LENGTH are bounded: Path echoes only
-	// the first MaxFilterDepth+1 segments, each one cut to 16 bytes plus "…"
-	// like any other unvalidated client text. The client must not get to
-	// choose the size of the error body, by either dimension. A trailing "…"
-	// appears only when segments were actually DROPPED — the mark means
-	// "there was more" — so a too-MANY-hops path, already within
-	// MaxFilterDepth by the time it is counted, always comes back whole and
-	// unmarked. It is the PER-PATH family of bounds plus the node count;
-	// the tree-wide bound on to-many hops is FILTER_TOO_EXPENSIVE.
+	// FILTER_TOO_DEEP covers the per-path filter bounds plus the node count:
+	// a path longer than Limits.MaxFilterDepth, a path crossing more than
+	// Limits.MaxFilterMany to-many hops, and a tree with more than
+	// Limits.MaxFilterNodes conditions and groups (Path is empty). A too-deep
+	// path is refused before any hop is checked, so Path echoes only the first
+	// MaxFilterDepth+1 segments, each clipped, with a trailing "…" only when
+	// segments were actually dropped (a too-many-hops path is already within
+	// MaxFilterDepth and comes back whole). The tree-wide bound on to-many
+	// hops is FILTER_TOO_EXPENSIVE.
 	FILTER_TOO_DEEP Code = "FILTER_TOO_DEEP"
 
 	// FILTER_TOO_EXPENSIVE is returned by ResolveFilter when the filter tree's

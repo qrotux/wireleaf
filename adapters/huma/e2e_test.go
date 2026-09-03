@@ -66,9 +66,6 @@ func newE2EAPI(t *testing.T) (humatest.TestAPI, *apidoc.Components, *Registry, h
 // operation's input through it (so the body components enter the SHARED set),
 // serves them in the document, and validates requests against the converted
 // schemas.
-//
-// The full config/operation layer is Task 19; this stays at "the bridge is a
-// working humav2.Registry under DefaultConfig".
 func TestBridgeDrivesHumaEndToEnd(t *testing.T) {
 	api, c, bridge, cfg := newE2EAPI(t)
 
@@ -152,8 +149,7 @@ func TestBridgeNullableRefIsEnforced(t *testing.T) {
 	if r := api.Put("/nullable", base(map[string]any{"label": "x"})); r.Code != http.StatusOK {
 		t.Fatalf("valid object = %d: %s", r.Code, r.Body.String())
 	}
-	// an object missing its required property: matches NEITHER arm. This is the
-	// regression — it used to slip through the null arm with a 200.
+	// an object missing its required property: matches NEITHER arm.
 	r := api.Put("/nullable", base(map[string]any{}))
 	if r.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("invalid object under a nullable ref = %d (must be 422): %s", r.Code, r.Body.String())
@@ -207,11 +203,10 @@ type AppTyped struct {
 	ID string `json:"id"`
 }
 
-// THE round-3 regression: an application-registered component used as a RESPONSE
-// body through the Node[W] idiom. Serving it typed makes huma's
-// SchemaLinkTransformer accept it ("type":"object") and then dereference
-// TypeFromRef — outside its own recover() — so a component with no Go type
-// panicked huma.Register.
+// An application-registered component used as a RESPONSE body through the
+// Node[W] idiom. Serving it typed makes huma's SchemaLinkTransformer accept it
+// ("type":"object") and then dereference TypeFromRef — outside its own
+// recover() — so a component with no Go type would panic huma.Register.
 func TestNodeResponseBodyWithAppRegisteredComponent(t *testing.T) {
 	c := apidoc.NewComponents()
 	// The application owns this component: hand-assembled, no wire type behind
@@ -227,7 +222,6 @@ func TestNodeResponseBodyWithAppRegisteredComponent(t *testing.T) {
 	cfg.Components = &humav2.Components{Schemas: bridge}
 	_, api := humatest.New(t, cfg)
 
-	// This is the call that used to panic.
 	humav2.Register(api, humav2.Operation{
 		OperationID: "get-node",
 		Method:      http.MethodGet,

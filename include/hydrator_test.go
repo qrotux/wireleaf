@@ -56,9 +56,7 @@ func TestBindPanicsOnNil(t *testing.T) {
 	Bind(nil, nil, Options{})
 }
 
-// ---------------------------------------------------------------- registry stubs
-//
-// Both wrap the toy graph's *fakeReg (toygraph_test.go, untouched) and override
+// Both wrap the toy graph's *fakeReg (toygraph_test.go) and override
 // only FetchByIDs: one to simulate a buggy fetcher returning two rows for one
 // id, one to simulate a node with no by-id fetcher registered at all.
 

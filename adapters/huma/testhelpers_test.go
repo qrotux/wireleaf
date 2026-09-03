@@ -1,7 +1,6 @@
 package huma
 
-// The ONE place the package's shared test helpers live. Do not redefine them
-// elsewhere in the package (redeclaration is a compile error).
+// The ONE place the package's shared test helpers live.
 
 import (
 	"fmt"

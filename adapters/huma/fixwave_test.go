@@ -1,11 +1,10 @@
 package huma
 
-// fixwave_test.go — the final-review fix wave's own tests.
+// Two properties this package must hold:
 //
-//   - C1: SchemaFromRef is on huma's request-validation path and populates the
+//   - SchemaFromRef is on huma's request-validation path and populates the
 //     conversion cache lazily, so it must be safe from many goroutines at once.
-//   - I1: the response body must carry NO trailing newline (spec §6) and NO
-//     HTML escaping.
+//   - the response body must carry NO trailing newline and NO HTML escaping.
 
 import (
 	"context"
@@ -23,7 +22,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// C1 — concurrent SchemaFromRef against a COLD cache
+// concurrent SchemaFromRef against a COLD cache
 // ---------------------------------------------------------------------------
 
 // RaceBody and its auxiliaries give the bridge several distinct component names
@@ -118,7 +117,7 @@ func TestMapIsRaceFree(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// I1 — the wireleaf JSON format
+// the wireleaf JSON format
 // ---------------------------------------------------------------------------
 
 // EscapeBody carries a string field whose value contains the three bytes
@@ -157,7 +156,7 @@ func TestResponseBodyHasNoTrailingNewlineOrEscaping(t *testing.T) {
 	body := resp.Body.String()
 
 	if strings.HasSuffix(body, "\n") {
-		t.Errorf("response body ends with a newline (spec §6 forbids it): %q", body)
+		t.Errorf("response body ends with a newline: %q", body)
 	}
 	if !strings.Contains(body, raw) {
 		t.Errorf("response body escaped the string: got %q, want it to contain %q verbatim", body, raw)

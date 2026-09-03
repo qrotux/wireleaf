@@ -23,8 +23,7 @@ type nodeEnvelope struct {
 }
 
 // registerWiredNode builds a Components with nodeWire bound, plus its bridge.
-// The indexes live on the VALUE now, so every test gets a fresh one — no
-// package-global cleanup ritual.
+// The indexes live on the value, so every test gets a fresh one.
 func registerWiredNode() (*Registry, *apidoc.Components) {
 	c := apidoc.NewComponents()
 	RegisterNode[nodeWire](c, "NodeWireComponent")

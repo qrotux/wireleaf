@@ -15,10 +15,7 @@
 //     engine judges the OPERATOR against the column's type, not the value.
 //   - A to-many hop carries a QUANTIFIER (any / all / none) on its FilterStep;
 //     the adapter turns each one into a correlated EXISTS / NOT EXISTS. A
-//     to-one hop carries none. Limits.MaxFilterMany bounds the to-many hops
-//     of one path (each is a nested subquery), MaxFilterDepth all hops, and
-//     MaxFilterSubqueries the to-many hops of the WHOLE tree summed together —
-//     the per-path bounds say nothing about a tree of many cheap conditions.
+//     to-one hop carries none. The Limits.MaxFilter* fields bound the tree.
 //   - Generating SQL (joins, EXISTS) is the adapter's job, outside this
 //     module. ResolvedCond.Hops is what it walks.
 
@@ -32,8 +29,6 @@ import (
 
 	"github.com/qrotux/wireleaf/include/internal/clip"
 )
-
-// ------------------------------------------------------------------ AST
 
 // FilterOp is one operator of the closed set a condition may use.
 type FilterOp string
@@ -92,8 +87,6 @@ func (FilterAnd) filterNode()  {}
 func (FilterOr) filterNode()   {}
 func (FilterCond) filterNode() {}
 
-// ------------------------------------------------------------------ resolved
-
 // ResolvedFilter mirrors Filter with every name resolved to its SQL side:
 // ResolvedAnd, ResolvedOr or ResolvedCond.
 type ResolvedFilter interface{ resolvedFilterNode() }
@@ -137,16 +130,14 @@ func (ResolvedAnd) resolvedFilterNode()  {}
 func (ResolvedOr) resolvedFilterNode()   {}
 func (ResolvedCond) resolvedFilterNode() {}
 
-// ------------------------------------------------------------------ resolve
-
 // ResolveFilter checks f against root's graph and returns its SQL-side twin.
 // Errors are *Error: INVALID_FILTER for anything the graph does not admit,
 // FILTER_TOO_DEEP for a path or node count beyond opts.Limits,
 // FILTER_TOO_EXPENSIVE for a tree whose total to-many hops exceed
 // Limits.MaxFilterSubqueries (zero fields mean DefaultLimits). A nil f
-// resolves to nil. Like ResolvePlan it runs before
-// any fetch: a handler resolves the client's filter, then hands the result
-// to its RootFetcher through QueryArgs.Where.
+// resolves to nil. Like ResolvePlan it runs before any fetch: a handler
+// resolves the client's filter, then hands the result to its RootFetcher
+// through QueryArgs.Where.
 func ResolveFilter(root Resource, f Filter, opts Options) (ResolvedFilter, error) {
 	if f == nil {
 		return nil, nil
@@ -383,14 +374,11 @@ func quantKnown(q Quant) bool {
 }
 
 // clientEcho renders client text for an error path, at most clip.Max bytes
-// followed by "…". It applies to every string that reaches an error path
-// BECAUSE it was not found in the graph — an unknown edge key, an unknown
-// field, an unknown operator, an unknown quantifier: those are raw client text
-// of unbounded length, and echoing them whole would let a client choose the
-// size of the 400 body — the same reason truncPath exists. Names that WERE
-// found are bounded by the graph and are echoed whole. The cut lands on a rune
-// boundary; the known spellings are far below the bound and pass through
-// unchanged.
+// followed by "…" on a rune boundary. It applies to every string that reaches
+// an error path BECAUSE the graph did not know it (an unknown edge key, field,
+// operator or quantifier): those are unbounded client text, and echoing them
+// whole would let a client choose the size of the 400 body. Names the graph
+// DOES know are bounded by it and go back whole.
 func clientEcho(s string) string { return clip.Echo(s) }
 
 // stepKeys projects a path onto its edge keys. Quantifiers never appear in an
@@ -412,16 +400,10 @@ func condPath(keys []string, field string) string {
 
 // truncPath renders at most n leading keys of a REJECTED path, each key
 // bounded by clientEcho, and appends a trailing "…" ONLY when keys were
-// actually dropped. A too-deep condition is refused BEFORE any hop is
-// validated, so every key in it is raw client text: bounding the segment COUNT
-// alone still lets one 4 KB key choose the size of the error body, so each key
-// is bounded individually too. The MaxFilterMany site has the same property
-// for the keys after the current hop — those were never looked up — and
-// bounding the earlier, graph-known ones as well costs nothing: real column and
-// edge names sit far below the bound and pass through unchanged. That site
-// also never truncates: its path is within MaxFilterDepth by construction, so
-// it carries every key and no trailing ellipsis — the mark means "there was
-// more", and claiming it where nothing was cut misreads the fault.
+// actually dropped — the mark means "there was more". A too-deep condition is
+// refused BEFORE any hop is validated, so bounding the key COUNT alone would
+// still let one 4 KB key choose the size of the error body. The MaxFilterMany
+// site passes a path already within MaxFilterDepth, so it never truncates.
 func truncPath(keys []string, n int) string {
 	dropped := len(keys) > n
 	if n > len(keys) {

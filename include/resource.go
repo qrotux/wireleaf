@@ -5,8 +5,6 @@ package include
 
 import "reflect"
 
-// ------------------------------------------------------------------ Resource
-
 // Resource is the interface every node in the include graph must implement.
 type Resource interface {
 	// Name returns the globally-unique OpenAPI component name for this node.
@@ -34,8 +32,6 @@ type Resource interface {
 	// guarded-out level); implementations must tolerate it.
 	Enrich(docs []any, ctx *Ctx) error
 }
-
-// ------------------------------------------------------------------ Column
 
 // Column is the SQL-side binding of one serialized wire field. graph.Compile
 // derives it from the `col` struct tag on the node's wire struct —
@@ -85,8 +81,6 @@ func ColumnsOf(res Resource) map[string]Column {
 	}
 	return nil
 }
-
-// ------------------------------------------------------------------ Edge
 
 // EdgeKindType classifies how an edge is fetched and represented in the response.
 type EdgeKindType string
@@ -140,9 +134,8 @@ type Edge struct {
 
 	// MissingForeign OVERRIDES Ctx.Policies.MissingForeign for this edge; nil
 	// inherits the engine-wide fallback. It decides what happens when a NON-EMPTY FK read
-	// off the parent resolves to no row: keep the v0 shape
-	// (MissingForeignNull — null / a silently dropped list item) or fail the
-	// request (MissingForeignError). Meaningless (and rejected by
+	// off the parent resolves to no row: emit null, or silently drop the list
+	// item (MissingForeignNull), or fail the request (MissingForeignError). Meaningless (and rejected by
 	// graph.Compile) on reverse and computed edges, which read no parent FK.
 	MissingForeign *MissingForeignPolicy
 
@@ -225,14 +218,10 @@ type Edge struct {
 	Guard func(ctx *Ctx, parent any) bool
 
 	// ForeignKey reads the TARGET's id out of a parent row (held as any) for a
-	// TO-ONE edge. Returning "" means the parent holds no reference and the
-	// edge value is null. This is how the engine reads a parent's forward
-	// foreign-key VALUE without reflecting on the row struct (reflection is
-	// fragile; a typed closure is exact). Set via graph.ForeignKey.
-	//
-	// A REVERSE edge has none — it fetches children by the PARENT's own id
-	// (plan.Resource.IDOf(parentDoc)) — which is also why no absence there is
-	// a dangling reference (see MissingForeignPolicy).
+	// TO-ONE edge; "" means the parent holds no reference and the value is
+	// null. A typed closure rather than reflection on the row struct. A
+	// REVERSE edge has none — it fetches by the parent's own id, which is why
+	// no absence there is a dangling reference (see MissingForeignPolicy).
 	ForeignKey func(parent any) string
 
 	// ForeignKeys reads the TARGETS' id LIST out of a parent row (held as any)
@@ -252,8 +241,6 @@ type Edge struct {
 	// an import cycle); the OpenAPI emitter asserts it back.
 	ComputedSchema any
 }
-
-// ------------------------------------------------------------------ Envelope
 
 // Envelope is the wire-shape STYLE of one edge's value: how the target node
 // (or the array of targets) is wrapped under the edge key. The zero value is
@@ -309,14 +296,11 @@ func EdgeKind(e Edge) EdgeKindType {
 	return KindToOne
 }
 
-// ------------------------------------------------------------------ Fetcher func types
-
 // FetchByIDs is the forward-batch fetcher. The closure encapsulates the full
 // join shape; Edge.Backref / Edge.ArrayPath are classification and
 // OpenAPI metadata only and are not passed here. Per-request state (viewer,
 // locale, …) is read from c.Env.
 //
-// Implementations MUST be safe for concurrent use: the engine may call the
-// same fetcher from several goroutines for sibling edges (the v1 engine still
-// loads sibling edges sequentially, but the contract is concurrency-safe).
+// Implementations MUST be safe for concurrent use: the contract lets the
+// engine call the same fetcher from several goroutines for sibling edges.
 type FetchByIDs func(c *Ctx, ids []string) ([]any, error)

@@ -19,7 +19,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// ported adapter-module emission spec
+// emission spec
 // ---------------------------------------------------------------------------
 
 func TestEmitComponentsStitchesEdgeKinds(t *testing.T) {
@@ -500,7 +500,7 @@ func TestEmittedComponentIsValidJSON(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// required to-one edges (spec §1: graph.Required() → bare $ref, in `required`)
+// required to-one edges: graph.Required() → bare $ref, listed in `required`
 // ---------------------------------------------------------------------------
 
 // requireAuthor marks the toy graph's Book.author to-one edge as Required.

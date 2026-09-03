@@ -32,11 +32,9 @@ package apidoc
 // What SchemaFor does NOT mirror: a COMPUTED key's engine absence: the declared
 // schema is spliced in as required, which is the handler's splice contract.
 //
-// AUXILIARY AGREEMENT: the base object runs the SAME auxiliary inlining
-// EmitComponents runs — literally emit.go's inlineAux, over the same reflector
-// output and the same node-name set. Without it, SchemaFor would keep $refs to
-// nested-struct auxiliaries that EmitComponents inlines away and never emits,
-// and every such reference would dangle against the component map.
+// AUXILIARY AGREEMENT: the base object runs the same inlineAux EmitComponents
+// runs (see baseObjectIR), so every $ref SchemaFor emits is one the component
+// map contains.
 //
 // IMMUTABILITY: IR nodes reached from an edge shape or from a computed edge's
 // declared ComputedSchema are SHARED BY POINTER (the same invariant components
@@ -299,20 +297,15 @@ func setRequiredProp(base *IRNode, name string, value *IRNode) {
 // WITHOUT stitching edges: the node's component lands under Name() via the same
 // override EmitComponents uses.
 //
-// The reflector's AUXILIARY output is not discarded — it is fed straight into
-// emit.go's inlineAux, the one implementation of the inlining rules (bare-ref /
-// non-Opaque / not-a-node / not-in-a-cycle). That is what makes SchemaFor's refs
-// a SUBSET of EmitComponents' component map: a nested struct that EmitComponents
-// flattens away is flattened here too, and an auxiliary that survives inlining
-// (sole-ref, Opaque, cyclic) survives in both, under the same name.
+// The reflector's auxiliary output is fed through emit.go's inlineAux, the one
+// implementation of the inlining rules, so SchemaFor's refs are a SUBSET of
+// EmitComponents' component map: what EmitComponents flattens is flattened here
+// too, and what survives there survives here under the same name.
 //
-// The node-name set is everything reachable from root by includable edges — the
-// same walk EmitComponents does, seeded with root alone. EmitComponents' roots
-// can only make that set LARGER (reachability is transitive, and root's own
-// reachable set is contained in it), and a larger node set only PROTECTS more
-// names from inlining. The residual gap is emit.go's documented EmitComponent
-// restriction: a wire struct referencing a node's wire type that is NOT
-// reachable from root through includable edges.
+// The node-name set is what is reachable from root alone; EmitComponents' roots
+// can only make that set larger, and a larger set only protects more names from
+// inlining. The residual gap is EmitComponent's documented restriction: a wire
+// struct referencing a node not reachable from root.
 func baseObjectIR(r Reflector, root include.Resource) (*IRNode, error) {
 	t, err := wireType(root)
 	if err != nil {

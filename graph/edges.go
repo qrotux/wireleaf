@@ -95,8 +95,7 @@ type edgeSettings struct {
 // EdgeBuilder is the chained configurator NodeHandle.Edge returns. It is
 // parameterized by the PARENT node's Row type, so the closures declared here
 // (ForeignKey, ForeignKeys, Guard) are checked against the right Row by the Go
-// COMPILER — a closure typed on another node's Row does not build, where the
-// option-based API only caught it as a Compile finding.
+// COMPILER — a closure typed on another node's Row does not build.
 //
 // Methods record; nothing validates until Builder.Compile (which still owns
 // the kind ↔ setting matrix, the nil-closure checks and everything else the
@@ -181,16 +180,11 @@ func (e *EdgeBuilder[Row]) Includable() *EdgeBuilder[Row] {
 
 // Filterable lets a filter condition traverse this edge — `author.name` on a
 // Book root reaches Author's filterable columns through a filterable `author`
-// edge (deny-by-default). It is INDEPENDENT of Includable: an edge a client
-// may filter through need not be one it may include, and vice versa — a
-// filter reveals facts about the target row without loading it, so it is its
-// own permission. Compile admits it on to-one, reverse and to-many edges (a
-// to-many hop needs a quantifier — any/all/none — on the client's
-// include.FilterStep, which ResolveFilter demands and Compile only permits),
-// never on an in-array or computed edge, never next to Guard (a Go closure
-// over the parent row that no SQL-side filter can honour), and only when the
-// target has something to filter on (a filterable column or a filterable
-// edge).
+// edge (deny-by-default). It is independent of Includable: a filter reveals
+// facts about the target row without loading it, so it is its own permission.
+// Compile admits it on to-one, reverse and to-many edges only, never next to
+// Guard, and only when the target has something to filter on; the rules are
+// spelled out on include.Edge.Filterable.
 func (e *EdgeBuilder[Row]) Filterable() *EdgeBuilder[Row] {
 	e.b.mustLive()
 	e.set.filterable = true

@@ -1,17 +1,5 @@
 package huma
 
-// api.go — the wiring object.
-//
-// Every earlier piece of this adapter is a free function over something the
-// application assembles by hand: a Components set, a huma Config, an
-// Operation. API is the one place those stop being independent: the graph the
-// planner walks, the include.Options it walks it with, the components the
-// document is written into and the huma API the operations are registered on
-// are ONE set of decisions, and the document is only trustworthy while they
-// agree. New makes them together; Include/Inputs document a resource with the
-// SAME options the planner will enforce; Register refuses an operation whose
-// output carries a Node[W] no Bind ever wired.
-
 import (
 	"context"
 	"fmt"
@@ -226,19 +214,12 @@ func (a *API) Inputs(res include.Resource) OpOpt {
 			op.Parameters = append(op.Parameters, hp)
 		}
 		errs(op)
-		// ListQuery carries EVERY list field — both page and cursor, sort and
-		// where — because the resolver has to SEE a value the resource does
-		// not accept in order to reject it (INVALID_PAGINATION / INVALID_SORT
-		// / INVALID_FILTER). huma derives a query parameter from every tagged
-		// field, so without this the document of a cursor resource would
-		// advertise ?page, an offset one ?cursor, and a resource with sorting
-		// or filtering switched off would advertise a bare untyped ?sort /
-		// ?where — the very drift Inputs exists to prevent. InputParams is the
-		// authority on what IS documented; everything ListQuery can carry and
-		// InputParams left out is dropped. The removal cannot happen here:
-		// huma appends the struct-derived parameters after the decorators run,
-		// so this only RECORDS the names, and Attach's OnAddOperation hook
-		// prunes them off the operation huma files in the document.
+		// ListQuery carries EVERY list field (the resolver must see a value
+		// the resource does not accept in order to reject it), and huma
+		// derives a query parameter from each tagged field; everything
+		// InputParams left out is therefore pruned. Not here — huma appends
+		// the struct-derived parameters after the decorators run — so this
+		// only records the names and Attach's OnAddOperation hook removes them.
 		documented := map[string]bool{}
 		for _, p := range params {
 			documented[p.Name] = true
@@ -277,8 +258,8 @@ func queryTagsOf(t reflect.Type) []string {
 
 // metaDropQuery is the operation-metadata key Inputs uses to tell the
 // document hook which huma-derived query parameters the resource does not
-// accept. huma's
-// Operation.Metadata is yaml:"-", so it never reaches the document.
+// accept. huma's Operation.Metadata is yaml:"-", so it never reaches the
+// document.
 const metaDropQuery = "wireleaf:drop-query-params"
 
 // dropQueryParams removes the parameters Inputs marked from op, in place. It

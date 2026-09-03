@@ -1,8 +1,8 @@
 package apidoc
 
-// reviewfix_test.go — pins for the 2026-09-01 review fixes: SchemaFor mirrors
-// the planner's defaults-merge; emission reaches and stitches default edges;
-// EmitComponent fails loudly on surviving auxiliaries.
+// reviewfix_test.go — SchemaFor mirrors the planner's defaults-merge; emission
+// reaches and stitches default edges; EmitComponent fails loudly on surviving
+// auxiliaries.
 
 import (
 	"maps"

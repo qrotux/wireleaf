@@ -1,16 +1,14 @@
 package apidoc
 
-// schemafor_aux_test.go — C2: SchemaFor and EmitComponents must AGREE about
+// schemafor_aux_test.go — SchemaFor and EmitComponents must AGREE about
 // auxiliaries.
 //
-// Before the fix, baseObjectIR discarded the reflector's auxiliary output, so a
-// nested-struct property stayed a $ref in SchemaFor's result while
-// EmitComponents inlined it away and never emitted a component of that name.
-// Every such reference DANGLED against the map SchemaFor's doc says to resolve
-// it against.
-//
 // The invariant these tests pin: the set of refs SchemaFor emits is a SUBSET of
-// the names EmitComponents emits (plus the node names it also emits).
+// the names EmitComponents emits (plus the node names it also emits). Should
+// baseObjectIR ever discard the reflector's auxiliary output, a nested-struct
+// property would stay a $ref here while EmitComponents inlines it away and
+// emits no component of that name — a dangling reference against the very map
+// SchemaFor says to resolve against.
 
 import (
 	"maps"
@@ -37,8 +35,8 @@ type metaWire struct {
 }
 
 // plainInner is referenced ONLY barely, so EmitComponents inlines every
-// reference and DROPS the component entirely — the case where an unfixed
-// SchemaFor emits a $ref to a name that exists nowhere in the document.
+// reference and DROPS the component entirely — the case where SchemaFor could
+// emit a $ref to a name that exists nowhere in the document.
 type plainInner struct {
 	Kind string `json:"kind"`
 }
@@ -69,8 +67,9 @@ func TestSchemaForRefsAreAllEmittedComponents(t *testing.T) {
 		// The aux survives (a described ref keeps it alive), so both sides must
 		// name it.
 		{"aux survives inlining", &emitRes{name: "Meta", wire: metaWire{}, edges: map[string]include.Edge{}}},
-		// The aux is fully inlined and DROPPED. An unfixed SchemaFor references
-		// "plainInner", which EmitComponents does not emit at all.
+		// The aux is fully inlined and DROPPED: a SchemaFor that did not share
+		// the inlining would reference "plainInner", which EmitComponents does
+		// not emit at all.
 		{"aux fully inlined away", &emitRes{name: "Plain", wire: plainWire{}, edges: map[string]include.Edge{}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

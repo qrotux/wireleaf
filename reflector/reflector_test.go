@@ -60,7 +60,7 @@ func admitsNull(n *apidoc.IRNode) bool {
 	return false
 }
 
-// TestReflectHelpers pins the v0-signature one-type helpers.
+// TestReflectHelpers pins the one-type helpers.
 func TestReflectHelpers(t *testing.T) {
 	s := reflector.Reflect[reflectortest.AuxCollect]()
 	m := s.Map()
@@ -393,7 +393,7 @@ func TestReflectPanicsOnNonStruct(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// spec §5a — BYTES parity
+// BYTES parity
 // ---------------------------------------------------------------------------
 
 // bytesParityFixture is a real Go value that exercises every verdict the
@@ -407,8 +407,7 @@ func TestReflectPanicsOnNonStruct(t *testing.T) {
 // The point of the test below is that it does not ask the policy what the
 // document should say and then check the document against the policy — that
 // would be circular. It MARSHALS this value with encoding/json and validates
-// the resulting BYTES against the reflected schema, which is what the spec
-// means by "the bytes agree with the document".
+// the resulting BYTES against the reflected schema.
 type bytesParityFixture struct {
 	// Plain: present with any value.
 	ID    string `json:"id"`
@@ -425,16 +424,11 @@ type bytesParityFixture struct {
 	OmitEmpty string `json:"omitEmpty,omitempty"`
 	OmitZero  int    `json:"omitZero,omitzero"`
 
-	// Plain nested struct and slice, to prove the walk reaches composites.
-	//
-	// NOTE — a NIL slice or map marshals to JSON null under encoding/json,
-	// while the nullability policy verdicts an untagged slice field Plain (it
-	// is not a pointer and carries no omitempty). Those two disagree, and this
-	// test would report it as a §5a violation. That corner is a KNOWN v1
-	// boundary of the policy, not of this test, so the fixture keeps Tags
-	// non-nil in every case: the assertion below stays about the verdicts it
-	// was written to pin. Give a slice field `omitempty` (Optional) or make the
-	// mapper emit an empty slice to stay inside the document.
+	// Nested struct and slice, to prove the walk reaches composites. Tags stays
+	// non-nil in every case: a NIL slice marshals to JSON null while the policy
+	// verdicts an untagged slice field Plain, a known boundary of the policy
+	// that this test does not pin (give the field omitempty, or emit an empty
+	// slice, to stay inside the document).
 	Aux  pAux     `json:"aux"`
 	Tags []string `json:"tags"`
 }
@@ -443,9 +437,9 @@ type pAux struct {
 	Label string `json:"label"`
 }
 
-// TestReflectedSchemaAgreesWithMarshalledBytes is spec §5a: for a REAL value
+// TestReflectedSchemaAgreesWithMarshalledBytes pins that for a REAL value
 // marshalled by encoding/json, the emitted bytes and the reflected component
-// must agree on
+// agree on
 //
 //   - every emitted key is a declared property (no key the document omits);
 //   - every REQUIRED property is present in the bytes;

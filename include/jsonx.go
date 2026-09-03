@@ -1,13 +1,9 @@
 // jsonx.go — the engine's wire-byte marshalers.
 //
-// Go's json.Marshal HTML-escapes `&`, `<`, `>` into their \u sequences.
-// MarshalNoEscape provides JSON.stringify-parity bytes instead, and is the
-// ENGINE DEFAULT (Ctx.Marshal == nil). Callers that want the stdlib's escaping
-// back install MarshalStd as Ctx.Marshal.
-//
-// Residual divergence class: Go's encoder ALWAYS escapes U+2028/U+2029 while
-// JSON.stringify emits them raw — unfixable with the stdlib encoder, tolerated
-// if such characters ever appear in data.
+// MarshalNoEscape (JSON.stringify-parity bytes) is the engine default;
+// MarshalStd restores encoding/json's HTML escaping. Residual divergence: Go's
+// encoder always escapes U+2028/U+2029 while JSON.stringify emits them raw —
+// unfixable with the stdlib encoder, tolerated.
 
 package include
 

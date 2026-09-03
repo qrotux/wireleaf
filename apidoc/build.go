@@ -4,8 +4,7 @@ package apidoc
 //
 // There is no package-global registry. A Components value is created, filled
 // and handed to whoever assembles the document; two independent documents in
-// one process are two independent Components (the v0 global Default() made that
-// impossible and made test isolation a cleanup ritual).
+// one process are two independent Components.
 //
 // Everything is stored as typed IR. Assembly NEVER routes a component through
 // map[string]any: that would lose property order and an Opaque fragment's exact
@@ -90,9 +89,8 @@ func (c *Components) add(name string, n *IRNode) error {
 
 // RegisterReflected is the bridge-facing registration: reflector output and the
 // adapter bridge re-request the same component many times over a document's
-// assembly, so an IDENTICAL re-registration is a no-op (spec §6: an idempotent
-// re-request is not a duplicate) and a CONFLICTING one is an error. Equality is
-// reflect.DeepEqual over the IR.
+// assembly, so an IDENTICAL re-registration is a no-op and a CONFLICTING one is
+// an error. Equality is reflect.DeepEqual over the IR.
 //
 // It is exported because the huma adapter lives in a SEPARATE module and is the
 // registry bridge: without it the bridge would have to keep a private shadow of
@@ -191,7 +189,7 @@ func (c *Components) ExternalRefs(names ...string) {
 }
 
 // ---------------------------------------------------------------------------
-// node wrapper index (the v0 package globals, now per-registry)
+// node wrapper index
 // ---------------------------------------------------------------------------
 
 // RegisterNode binds wire type W to a component name on c: both W itself (for

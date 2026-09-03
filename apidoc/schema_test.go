@@ -113,7 +113,7 @@ func TestRawFragmentTypedKeywordsLand(t *testing.T) {
 	}
 }
 
-// TestRawFragmentOpaqueIsWholeFragment — decision #9: one unmodelled keyword
+// TestRawFragmentOpaqueIsWholeFragment — one unmodelled keyword
 // makes the WHOLE fragment opaque. A partial parse would silently drop the very
 // keyword the caller reached for RawFragment to keep.
 func TestRawFragmentOpaqueIsWholeFragment(t *testing.T) {
@@ -136,7 +136,8 @@ func TestRawFragmentPanicsOnBadValue(t *testing.T) {
 	assertPanics(t, func() { RawFragment(map[string]any{"type": "object", "required": []any{"nope"}}) })
 }
 
-// TestMapIsDetachedCopy — recorded DRIFT: v0 returned the live backing map.
+// TestMapIsDetachedCopy — Map returns a copy, so a write through it does not
+// reach the schema.
 func TestMapIsDetachedCopy(t *testing.T) {
 	s := fixture()
 	m := s.Map()
@@ -147,7 +148,7 @@ func TestMapIsDetachedCopy(t *testing.T) {
 	}
 }
 
-// TestSchemaAliasesSharedNode — v0 aliasing semantics: value-receiver deltas
+// TestSchemaAliasesSharedNode — value-receiver deltas
 // mutate the SHARED node, so two Schema values over one node see each other's
 // edits (the single-owner convention exists because of this).
 func TestSchemaAliasesSharedNode(t *testing.T) {
@@ -160,7 +161,7 @@ func TestSchemaAliasesSharedNode(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// unconsumed structural keywords (review fix #1)
+// unconsumed structural keywords
 // ---------------------------------------------------------------------------
 
 // TestRawFragmentUnconsumedCombinationIsOpaque — the kind dispatch picks ONE
@@ -222,7 +223,7 @@ func TestRawFragmentRefKeepsAnnotationSiblings(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// strict mode (review fix #3)
+// strict mode
 // ---------------------------------------------------------------------------
 
 // TestFragmentToIRStrictNamesTheOffender — on a TYPED ingress path (reflector

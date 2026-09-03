@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// ------------------------------------------------------------------ Limits
-
 // Limits bounds the size and shape of a CLIENT-supplied include tree. Only
 // client-introduced edges count toward these caps; a resource's own Defaults()
 // expansion is uncapped (developer responsibility) but is still guaranteed to
@@ -54,8 +52,6 @@ type Limits struct {
 
 // DefaultLimits is the engine-wide default.
 var DefaultLimits = Limits{MaxDepth: 4, MaxNodes: 50, MaxCost: 5000, MaxRows: 50000, MaxFilterDepth: 4, MaxFilterMany: 2, MaxFilterNodes: 32, MaxFilterSubqueries: 8}
-
-// ------------------------------------------------------------------ Options
 
 // SortPolicy controls how an unknown client :sort() key is treated.
 type SortPolicy int
@@ -119,29 +115,24 @@ const (
 // id and did not return it. That is a dangling reference: either the FK is
 // orphaned, or the fetcher filtered out a row the parent still points at.
 //
-// It applies to the three kinds that read a parent-side FK — to-one
-// (ForeignKey), forward-hasMany and in-array (ForeignKeys). A REVERSE edge has no
-// parent-side FK (it fetches by the parent's own id, and no children simply
-// means an empty collection), so the policy does not reach it, and neither
-// does it reach a computed edge, which fetches nothing.
-//
-// An EMPTY fk is NOT a dangling reference — it is the absence of a reference,
-// and on a required edge that case belongs to MissingRequiredPolicy.
+// It applies to the three kinds that read a parent-side FK — to-one,
+// forward-hasMany and in-array; a reverse edge fetches by the parent's own id
+// and a computed edge fetches nothing. An EMPTY fk is the absence of a
+// reference, not a dangling one: on a required edge that case belongs to
+// MissingRequiredPolicy.
 //
 // Edge.MissingForeign overrides it per edge.
 type MissingForeignPolicy int
 
 const (
-	// MissingForeignNull keeps the v0 behaviour: a to-one edge yields null, a
-	// to-many edge silently DROPS the unresolved item from its list, and an
-	// in-array element's subField becomes null.
+	// MissingForeignNull absorbs the dangling reference: a to-one edge yields
+	// null, a to-many edge silently DROPS the unresolved item from its list,
+	// and an in-array element's subField becomes null.
 	MissingForeignNull MissingForeignPolicy = iota
 	// MissingForeignError fails the whole request instead, naming the edge and
 	// the id that resolved to nothing.
 	MissingForeignError
 )
-
-// ------------------------------------------------------------------ edge overrides
 
 // EdgePolicies is the per-edge override set carried on an Edge: a nil field
 // inherits the engine-wide fallback (Options.ExcludeRequiredPolicy at plan
@@ -185,26 +176,24 @@ func EdgePoliciesOf(ps ...EdgePolicy) EdgePolicies {
 //   - HasMore reported on a BARE edge (Limit 0 = fetch-all, nothing beyond);
 //   - FetchIDs returned a row whose id was never requested.
 //
-// FetcherContractTolerant (default) keeps the historical behaviour: the engine
-// corrects silently (truncates, drops). FetcherContractStrict fails the whole
-// request instead, naming the edge and the violation — run it in tests and dev
+// FetcherContractTolerant (default) corrects silently (truncates, drops).
+// FetcherContractStrict fails the whole request instead, naming the edge and
+// the violation — run it in tests and dev
 // so a broken fetcher is loud on its FIRST execution; graph/loadertest remains
 // the normative harness (it also checks what the engine cannot observe).
 type FetcherContractPolicy int
 
 const (
-	// FetcherContractTolerant silently corrects violations (v0 behaviour).
+	// FetcherContractTolerant silently corrects violations.
 	FetcherContractTolerant FetcherContractPolicy = iota
 	// FetcherContractStrict fails the request on the first violation.
 	FetcherContractStrict
 )
 
-// ------------------------------------------------------------------ Policies
-
 // Policies is the engine-wide MATERIALIZE-time fallback set, carried on Ctx
 // (the resolve-time policies stay on Options). The zero value is the
-// permissive default for every field, so a zero Ctx behaves exactly as
-// before the policies existed. A per-edge override on Edge wins where set
+// permissive default for every field, so a zero Ctx is fully permissive.
+// A per-edge override on Edge wins where set
 // (Edge.MissingRequired / Edge.MissingForeign); FetcherContract has no
 // per-edge override — a contract violation is a server-side fetcher bug,
 // not edge semantics.
@@ -244,8 +233,6 @@ func effectiveExcludeRequired(e *Edge, opts ExcludeRequiredPolicy) ExcludeRequir
 	}
 	return opts
 }
-
-// ------------------------------------------------------------------ PlanNode
 
 // PlanNode is a validated, defaults-merged node in the resolved include plan.
 // The tree is produced by ResolvePlan and consumed by the materialize step;
@@ -302,8 +289,6 @@ func (p *PlanNode) Get(edgeKey string) *PlanNode {
 	return nil
 }
 
-// ------------------------------------------------------------------ ResolvePlan
-
 // ResolvePlan turns rootNode + client IncludeTree + exclude + opts into a
 // validated PlanNode tree — the "400-before-fetch" step.
 //
@@ -327,10 +312,8 @@ func (p *PlanNode) Get(edgeKey string) *PlanNode {
 //     namespace, Includable gate, arg validation, depth/node accounting — but
 //     it is a LEAF: a client child segment under it → INVALID_INCLUDE at that
 //     child path, and its PlanNode carries Computed=true with a nil Resource.
-//   - exclude is applied LAST, in two passes: validate every path against the
-//     resolved plan (unknown → INVALID_INCLUDE; a path naming a REQUIRED edge
-//     → INVALID_INCLUDE under ExcludeRequiredStrict), then remove tolerantly. A
-//     REQUIRED edge is never removed under either ExcludeRequiredPolicy.
+//   - exclude is applied LAST (see applyExclude); a REQUIRED edge is never
+//     removed under either ExcludeRequiredPolicy.
 func ResolvePlan(root Resource, tree IncludeTree, exclude [][]string, opts Options) (*PlanNode, error) {
 	// nodeCount is shared across the whole recursion (client edges only).
 	nodeCount := 0
@@ -531,8 +514,6 @@ func ResolvePlan(root Resource, tree IncludeTree, exclude [][]string, opts Optio
 	return plan, nil
 }
 
-// ------------------------------------------------------------------ cost
-
 // estimateCost fills n.Cost for n and its subtree. parentRows is the
 // estimated number of rows at the PARENT level; this level's rows are
 // parentRows × the inbound edge's multiplier.
@@ -572,8 +553,6 @@ func edgeMultiplier(n *PlanNode) int {
 	return resolvedLimit(n, def)
 }
 
-// ------------------------------------------------------------------ args
-
 // validateArgs enforces the edge-argument contract for one plan node: an
 // undeclared name fails under ArgsStrict; a declared validator rejecting the
 // raw value fails; a client sort key missing from SortCols fails under
@@ -590,21 +569,10 @@ func validateArgs(edge *Edge, path string, args map[string]any, opts Options) er
 	}
 	kind := EdgeKind(*edge)
 	for name, raw := range args {
-		// The built-ins ":limit" and ":sort" are legal ONLY where the loading
-		// contract can honour them — an accepted-and-ignored built-in is a
-		// contract error, never a silent no-op:
-		//
-		//	:limit — reverse + forward-hasMany (both resolve a per-parent
-		//	         top-N), and never on a bare edge (fetch-all by
-		//	         definition; checked below with the coercion);
-		//	:sort  — reverse only (the one kind whose fetcher receives
-		//	         EdgeQuery.Sort).
-		//
-		// Everything else (to-one, in-array, computed) rejects both. This runs
-		// BEFORE the declared-arg short-circuit below, so a hand-built edge
-		// that declares an arg of either name cannot make the rejection
-		// evaporate (the builder path is compile-checked; this closes the
-		// engine-level surface).
+		// An accepted-and-ignored built-in is a contract error, never a
+		// silent no-op, so the kind gate runs BEFORE the declared-arg
+		// short-circuit below: a hand-built edge declaring an arg of either
+		// name cannot make the rejection evaporate.
 		if name == "limit" && kind != KindReverse && kind != KindForwardHasMany {
 			return NewError(INVALID_INCLUDE, path+":"+name)
 		}
@@ -617,11 +585,8 @@ func validateArgs(edge *Edge, path string, args map[string]any, opts Options) er
 					return NewError(INVALID_INCLUDE, path+":"+name)
 				}
 			}
-			// A DECLARED arg never shadows the built-in "limit": the declared
-			// validator runs first (above), then the built-in coercion runs
-			// anyway (below), so PlanNode.Args["limit"] is ALWAYS an int after
-			// planning. graph.Compile rejects such a declaration outright; this
-			// is the belt for hand-built edges outside the builder.
+			// A DECLARED "limit" never shadows the built-in coercion below,
+			// so PlanNode.Args["limit"] is ALWAYS an int after planning.
 			if name != "limit" {
 				continue
 			}
@@ -680,8 +645,6 @@ func parseLimit(raw any) (int, bool) {
 	return n, true
 }
 
-// ------------------------------------------------------------------ helpers
-
 // splitTreeNode splits a raw IncludeTree node into its args (":"-prefixed keys,
 // prefix stripped) and its child subtrees (all other keys). A non-tree child
 // value is treated as an empty subtree.
@@ -722,8 +685,6 @@ func extendSet(src map[string]bool, name string) map[string]bool {
 	return out
 }
 
-// ------------------------------------------------------------------ exclude
-
 // applyExclude removes subtrees named by exclude paths (after defaults+include).
 //
 // Two-pass strategy:
@@ -734,10 +695,9 @@ func extendSet(src map[string]bool, name string) map[string]bool {
 //	Pass 2 — apply removals tolerantly; a path whose ancestor was already removed
 //	         by a prior exclude is a silent no-op.
 //
-// A REQUIRED edge is never REMOVED under either policy: the document declares
-// its key always present, so honouring the exclude would make the response
-// violate the published component. policy only decides whether that request is
-// answered silently (ExcludeRequiredTolerant: no-op for that path, sub-paths beneath it
+// A REQUIRED edge is never REMOVED under either policy — the document declares
+// its key always present. policy only decides whether the request is answered
+// silently (ExcludeRequiredTolerant: no-op for that path, sub-paths beneath it
 // still prune) or refused (ExcludeRequiredStrict: INVALID_INCLUDE).
 func applyExclude(root *PlanNode, excludes [][]string, policy ExcludeRequiredPolicy) error {
 	// Pass 1: validate all paths against the original tree (before any mutation).

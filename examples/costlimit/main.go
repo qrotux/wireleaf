@@ -250,8 +250,6 @@ func listAuthors(g *graph.Graph, res include.Resource, bucket *costBucket, inclu
 	if err != nil {
 		return err
 	}
-	// The settled amount is what the bucket is actually charged: the rows the
-	// hydration materialized plus the filter's share, which is not refundable.
 	fmt.Printf("  include=%-15q page=%d  estimate=%4d (filter %3d)  settled=%4d (rows %3d + filter %3d)  docs=%d\n",
 		includeQS, page, reserved, filterCost, ctx.Rows()+filterCost, ctx.Rows(), filterCost, len(result.Data))
 	return nil

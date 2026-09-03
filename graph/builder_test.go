@@ -39,7 +39,7 @@ type TgWire struct {
 	ID string `json:"id"`
 }
 
-// ------------------------------------------------------------------ AC #1: the spec §1 declaration sketch compiles verbatim
+// ------------------------------------------------------------------ the declaration sketch compiles verbatim
 
 func TestBuilderRecordsDeclarations(t *testing.T) {
 	validatePage := func(raw any) error { return nil }
@@ -250,7 +250,7 @@ func TestBuilderNilClosuresStayNil(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ AC: PerParent
+// ------------------------------------------------------------------ PerParent
 
 func TestPerParentLoops(t *testing.T) {
 	var seen []string
@@ -300,7 +300,7 @@ func TestPerParentPropagatesFirstError(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ AC: dead after Compile
+// ------------------------------------------------------------------ dead after Compile
 
 func TestBuilderDeadAfterCompile(t *testing.T) {
 	b := NewBuilder()

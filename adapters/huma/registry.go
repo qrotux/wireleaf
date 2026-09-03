@@ -2,8 +2,7 @@ package huma
 
 // registry.go — the read-write humav2.Registry bridge.
 //
-// wireleaf is the schema authority (spec §6): huma no longer keeps its own
-// schema map. Every schema huma asks for is answered from the shared
+// wireleaf is the schema authority: huma keeps no schema map of its own. Every schema huma asks for is answered from the shared
 // apidoc.Components — either a component wireleaf already owns, or one produced
 // on demand by the canonical reflector and registered INTO the shared set. That
 // is what makes huma-originated types (ErrorModel, input structs, nested body
@@ -27,10 +26,10 @@ package huma
 // LIMITATION — huma's registryConfig (Config.AllowAdditionalPropertiesByDefault,
 // Config.FieldsOptionalByDefault) is applied by huma only to its own
 // *mapRegistry, so both options are silently INERT against this bridge:
-// additional-properties and required-ness are the canonical reflector's verdict.
-// Task 19's NewConfig guards the combination.
+// additional-properties and required-ness are the canonical reflector's verdict,
+// and NewConfig exposes neither option.
 //
-// MIGRATION NOTE — the canonical reflector deliberately does NOT emit
+// NOTE — the canonical reflector deliberately does NOT emit
 // "additionalProperties": false, while stock huma does for structs. A body
 // validated by wireleaf's components therefore accepts unknown properties where
 // stock huma would have rejected them. That is canon, not an oversight.
@@ -447,13 +446,11 @@ func (b *Registry) names() []string {
 // it. The same holds for a component bound to a non-struct type: NumField would
 // panic on the very same line.
 //
-// Nothing is lost by the degradation: such a component is typeless to huma
-// anyway, so it was never going to be validated against a Go type — and the
-// served document is byte-identical either way.
-// CONCURRENCY: the cache is read and written under mu (see the Registry doc).
-// The conversion itself runs UNLOCKED — it only reads the immutable IR — and a
-// racing duplicate conversion is resolved on insert, so every caller for a name
-// gets the same *humav2.Schema pointer.
+// The served document is byte-identical either way.
+//
+// CONCURRENCY: the cache is read and written under mu; the conversion itself
+// runs unlocked over the immutable IR, and a racing duplicate is resolved on
+// insert so every caller for a name gets the same *humav2.Schema pointer.
 func (b *Registry) schemaFor(name string) *humav2.Schema {
 	b.mu.RLock()
 	s, ok := b.converted[name]

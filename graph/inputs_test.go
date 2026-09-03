@@ -135,7 +135,7 @@ func TestInputsViaSpec(t *testing.T) {
 // TestInputsMaxLimitAloneCapsDefault: lowering only the cap is a complete
 // declaration. The package default (20) would exceed a MaxLimit of 10, so the
 // UNDECLARED default settles at the cap instead of failing compile; an
-// explicit default above the cap is still the contradiction it always was
+// explicit default above the cap stays a contradiction
 // (TestInputsFindings/"default over max").
 func TestInputsMaxLimitAloneCapsDefault(t *testing.T) {
 	g, err := inputsGraph(t, Inputs{Pagination: PageInput{MaxLimit: 10}})

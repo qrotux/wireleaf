@@ -57,8 +57,8 @@ type Prop struct {
 // JSON Schema (OAS 3.1 dialect) inside wireleaf; the wire form is produced by
 // MarshalJSON, which preserves property and keyword order.
 //
-// The spec calls this type Node; it is renamed here because the name Node is
-// taken by the wire carrier Node[W] (node.go).
+// It is named IRNode because the name Node is taken by the wire carrier
+// Node[W] (node.go).
 type IRNode struct {
 	Kind                Kind
 	Types               []string // e.g. ["string","null"]
@@ -109,11 +109,8 @@ type IRNode struct {
 // at serialization. So is a key that does not start with "x-": Extensions hold
 // vendor keys only.
 //
-// An extension value is arbitrary JSON and may carry a "$ref" (an x-links
-// block, say). The referenced component names are re-collected over the WHOLE
-// map rather than just the new value, so overwriting an extension drops the
-// names it used to contribute, and components assembly's dangling-ref check
-// sees every one of them.
+// extRefs is re-collected over the WHOLE map rather than just the new value, so
+// overwriting an extension drops the names it used to contribute.
 func (n *IRNode) SetExtension(key string, v any) error {
 	if standardKeywords[key] {
 		return fmt.Errorf("apidoc: standard keyword %q must not ride in Extensions: write its typed field instead", key)
@@ -134,8 +131,8 @@ func (n *IRNode) SetExtension(key string, v any) error {
 // ---------------------------------------------------------------------------
 
 // standardKeywords is every keyword the serializer emits from a typed field.
-// Such a key may never appear in Extensions (spec §5a: Extensions hold x-* and
-// unknown vendor keys only).
+// Such a key may never appear in Extensions, which hold x-* and unknown vendor
+// keys only.
 var standardKeywords = map[string]bool{
 	"$ref":                 true,
 	"type":                 true,
@@ -560,8 +557,8 @@ func hasNullArm(arms []*IRNode) bool {
 // error and returns it; a read-only walker just returns nil from fn.
 //
 // A typed-nil *IRNode in AdditionalProperties IS yielded (the type assertion
-// admits it), matching the historical walkers: validateComponent must see it
-// to report the nil sub-schema, and the read-only walkers nil-check anyway.
+// admits it): validateComponent must see it to report the nil sub-schema, and
+// the read-only walkers nil-check anyway.
 //
 // This is the CANONICAL definition of the IR's child edge set. A new
 // *IRNode-carrying field must be added here — and mirrored in substituteAux

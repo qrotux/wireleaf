@@ -82,8 +82,6 @@ func TestWrapItems(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ Materialize, wrapped style
-
 func withEnv(e Edge, env Envelope) Edge { e.Envelope = env; return e }
 
 func TestEnvelope_ToOne_PresentAndNull(t *testing.T) {

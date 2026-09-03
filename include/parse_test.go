@@ -54,8 +54,6 @@ func TestParseExclude(t *testing.T) {
 	}
 }
 
-// --- additional coverage for acceptance criteria ---
-
 // Whitespace trimming: surrounding spaces on tokens and segment names.
 func TestParseInclude_WhitespaceTrimming(t *testing.T) {
 	tree, err := ParseInclude(" book , author ")

@@ -14,7 +14,6 @@ import (
 // a generous 5s deadline that only trips if Materialize fails to terminate.
 func timeAfter() <-chan time.Time { return time.After(5 * time.Second) }
 
-// ---------------------------------------------------------------------------
 // Engine (Materialize) tests. These assert on RAW json.RawMessage BYTES
 // directly, so ctx here comes from byteCtx, which installs MarshalNoEscape:
 // the byte-exact expectations below are JSON.stringify-parity bytes, not
@@ -23,12 +22,8 @@ func timeAfter() <-chan time.Time { return time.After(5 * time.Second) }
 // They reuse the toy graph (toygraph_test.go) rows + fakeReg, and hand-build
 // small PlanNode variants so individual edge kinds can be isolated (e.g. a
 // to-one WITHOUT the toyA `self` default in the way).
-// ---------------------------------------------------------------------------
-
 // byteCtx is the Ctx used by every byte-pinning test in this file.
 func byteCtx(reg Registry) *Ctx { return &Ctx{Registry: reg, Marshal: MarshalNoEscape} }
-
-// ------------------------------------------------------------------ plan helpers
 
 // leafPlan builds a childless plan node for res (a resolved-plan leaf).
 func leafPlan(res Resource) *PlanNode {
@@ -55,8 +50,6 @@ func childNode(key string, e Edge, target Resource, grandchildren ...*PlanNode) 
 		Children: grandchildren,
 	}
 }
-
-// ------------------------------------------------------------------ spy registry
 
 // spyReg decorates a Registry, recording every id set requested via FetchByIDs
 // and every BATCHED reverse call (parent id list + resolved EdgeQuery), keyed
@@ -125,8 +118,6 @@ func (s *spyReg) asked(name, id string) bool {
 	return false
 }
 
-// ------------------------------------------------------------------ (a) to-one present + input order
-
 func TestMaterialize_ToOnePresent_InputOrder(t *testing.T) {
 	g := buildToyGraph()
 	ctx := byteCtx(g.Reg)
@@ -158,11 +149,8 @@ func TestMaterialize_ToOnePresent_InputOrder(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ (a2) scalar HTML chars stay raw
-
 // A scalar string containing `&`/`<`/`>` reaches the wire UNESCAPED when
-// ctx.Marshal is MarshalNoEscape (explicit opt-in of the same function the
-// default now uses).
+// ctx.Marshal is MarshalNoEscape (the explicit spelling of the engine default).
 func TestMaterialize_ScalarHTMLChars_RawBytes(t *testing.T) {
 	g := buildToyGraph()
 	ctx := byteCtx(g.Reg)
@@ -179,8 +167,8 @@ func TestMaterialize_ScalarHTMLChars_RawBytes(t *testing.T) {
 	}
 }
 
-// The v1 DEFAULT (ctx.Marshal nil) is MarshalNoEscape: `&`/`<`/`>` stay raw
-// without any opt-in. This is the flip of the v0 behavior (stdlib escaping).
+// The DEFAULT (ctx.Marshal nil) is MarshalNoEscape: `&`/`<`/`>` stay raw
+// without any opt-in, where encoding/json would escape them.
 func TestMarshalDefaultIsNoEscape(t *testing.T) {
 	g := buildToyGraph()
 	ctx := &Ctx{Registry: g.Reg} // Marshal nil → the engine default
@@ -237,8 +225,6 @@ func TestMarshalStdEscapes(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ (b) access → null (missing id)
-
 func TestMaterialize_ToOne_MissingID_Null(t *testing.T) {
 	g := buildToyGraph()
 	ctx := byteCtx(g.Reg)
@@ -279,8 +265,6 @@ func TestMaterialize_ToOne_EmptyFK_Null(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ (c) guard → null + no fetch
-
 func TestMaterialize_ToOne_GuardFalse_NullAndNoFetch(t *testing.T) {
 	g := buildToyGraph()
 	spy := newSpyReg(g.Reg)
@@ -307,8 +291,6 @@ func TestMaterialize_ToOne_GuardFalse_NullAndNoFetch(t *testing.T) {
 		t.Errorf("guarded edge must issue no batch ids, got %v", spy.requestedID["ToyB"])
 	}
 }
-
-// ------------------------------------------------------------------ (d) reverse envelope + hasMore
 
 func TestMaterialize_Reverse_Envelope_HasMore(t *testing.T) {
 	g := buildToyGraph()
@@ -346,8 +328,6 @@ func TestMaterialize_Reverse_EmptyEnvelope(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ (e) bare reverse → flat array
-
 func TestMaterialize_Reverse_Bare_FlatArray(t *testing.T) {
 	g := buildToyGraph()
 	ctx := byteCtx(g.Reg)
@@ -377,8 +357,6 @@ func TestMaterialize_Reverse_Bare_FlatArray(t *testing.T) {
 		t.Errorf("empty bare reverse = %s, want %s", out2[0], want2)
 	}
 }
-
-// ------------------------------------------------------------------ reverse guard-false → EMPTY node
 
 // A guarded-out reverse edge yields the EMPTY node, NOT null: enveloped →
 // {items:[],hasMore:false}; bare → []. Same empty shape a guard-pass with zero
@@ -416,8 +394,6 @@ func TestMaterialize_Reverse_GuardFalse_Empty(t *testing.T) {
 		t.Errorf("guarded reverse (bare) = %s, want %s", outBare[0], wantBare)
 	}
 }
-
-// ------------------------------------------------------------------ (f) key order byte-exact (2+ edges)
 
 func TestMaterialize_KeyOrder_ByteExact(t *testing.T) {
 	g := buildToyGraph()
@@ -460,8 +436,6 @@ func TestMaterialize_KeyOrder_ByteExact(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ (g) cycle terminates (self default)
-
 func TestMaterialize_SelfCycle_Terminates(t *testing.T) {
 	g := buildToyGraph()
 	ctx := byteCtx(g.Reg)
@@ -501,8 +475,6 @@ func TestMaterialize_SelfCycle_Terminates(t *testing.T) {
 		t.Errorf("self cycle result =\n  %s\nwant\n  %s", out[0], want)
 	}
 }
-
-// ------------------------------------------------------------------ forward-hasMany (extra coverage)
 
 // The toy graph has no forward-hasMany edge; build a local one so the ForeignKeys /
 // union / per-parent reorder / envelope path is exercised too. Parent holds an
@@ -545,8 +517,6 @@ func TestMaterialize_ForwardHasMany_EnvelopeReorderLimit(t *testing.T) {
 		t.Errorf("forward-hasMany =\n  %s\nwant\n  %s", out[0], want)
 	}
 }
-
-// ------------------------------------------------------------------ batch reverse contract
 
 // stubParentsReg is a Registry whose reverse fetcher returns a CANNED result
 // map regardless of what was asked, recording the calls. It exists to pin the
@@ -991,8 +961,6 @@ func TestForwardHasMany_ClientLimitTrims(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ assembleObject unit tests (raw bytes)
-
 func TestAssembleObject_RawBytes(t *testing.T) {
 	scalar := json.RawMessage(`{"id":"1","name":"a"}`)
 
@@ -1031,8 +999,6 @@ func TestAssembleObject_RawBytes(t *testing.T) {
 		t.Errorf("empty-scalar = %s, want {\"a\":1,\"b\":2}", gotEmpty)
 	}
 }
-
-// ------------------------------------------------------------------ computed edges: planned, then skipped
 
 // A computed edge survives planning (PlanNode.Computed) but is skipped
 // ENTIRELY by the engine: its key never appears in the response bytes (the
@@ -1091,8 +1057,6 @@ func TestComputedEdgeSkipKeepsSiblingOrder(t *testing.T) {
 		t.Errorf("out[0] =\n  %s\nwant\n  %s", out[0], want)
 	}
 }
-
-// ------------------------------------------------------------------ in-array edges
 
 // An in-array edge splices the hydrated target INTO each element of an array
 // that already lives in the parent's own scalar bytes — it adds no top-level
@@ -1394,8 +1358,6 @@ func TestInArrayReplacesExistingSubField(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ MissingRequiredPolicy
-
 // requiredChildPlan builds a root plan over toyA with ONE required to-one
 // child ("child" → toyB, ForeignKey reads childFK), carrying the given
 // per-edge override (nil inherits Ctx.Policies).
@@ -1503,8 +1465,6 @@ func TestRequiredMissing_EdgeOverrideWinsOverCtx(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ MissingForeignPolicy
-
 // A dangling FK (non-empty id the fetcher did not return) fails the request
 // under MissingForeignError, on every kind that reads a parent-side FK.
 func TestMissingForeign_ErrorOnDanglingFK(t *testing.T) {
@@ -1544,7 +1504,7 @@ func TestMissingForeign_ErrorOnDanglingFK(t *testing.T) {
 	})
 }
 
-// The default keeps the v0 shapes: null for to-one, a dropped item for to-many.
+// The default absorbs it: null for to-one, a dropped item for to-many.
 func TestMissingForeign_NullIsTheDefault(t *testing.T) {
 	g := buildToyGraph()
 	ctx := byteCtx(requiredChildReg())
@@ -1619,8 +1579,6 @@ func TestMissingForeign_EdgeOverrideWinsOverCtx(t *testing.T) {
 		})
 	}
 }
-
-// ------------------------------------------------------------------ FetcherContractPolicy
 
 // reversePlan builds a root→kids reverse plan; contract strictness comes from
 // Ctx.Policies.FetcherContract (see strictCtx below).
@@ -1730,8 +1688,6 @@ func (r *extraRowsReg) FetchByIDs(res Resource) (FetchByIDs, bool) {
 func (r *extraRowsReg) FetchByParents(res Resource) (FetchByParents, bool) {
 	return r.inner.FetchByParents(res)
 }
-
-// ------------------------------------------------------------------ row budget
 
 func TestMaterialize_CountsRows(t *testing.T) {
 	g := buildToyGraph()

@@ -1,7 +1,5 @@
 package huma
 
-// inputs_e2e_test.go — the integration checkpoint of the node-inputs feature.
-//
 // One served API per (pagination mode, filter syntax) pair, and both halves
 // asserted against it: the OpenAPI document huma emits at /openapi.json, and
 // the runtime behaviour of the same operations. They must agree — the document

@@ -56,8 +56,6 @@ type bookFallbackWire struct {
 	ID string `json:"id"`
 }
 
-// ------------------------------------------------------------------ registry
-
 // reviewFallbackReg is an in-memory Registry whose batched reverse fetcher
 // ACTUALLY sorts the canned rows by the SQL key it receives. Without that there
 // is nothing to observe: a fetcher ignoring the key would make any
@@ -108,8 +106,6 @@ func (r *reviewFallbackReg) FetchByParents(Resource) (FetchByParents, bool) {
 	}, true
 }
 
-// ------------------------------------------------------------------ graph
-
 // buildReviewFallbackGraph assembles a minimal "book → reviews" graph: a
 // reverse edge, backref "book", includable, limit 10, default sort "postedAt",
 // whitelist = reviewFallbackSortCols (the map graph.Compile derives from the
@@ -151,8 +147,6 @@ func buildReviewFallbackGraph() (Resource, *reviewFallbackReg) {
 	}}
 	return bookNode, reg
 }
-
-// ------------------------------------------------------------------ helper
 
 // resolveReviewInclude drives one include string through the whole path —
 // ParseInclude → ResolvePlan → reverseSortKey → Materialize — and returns the
@@ -220,8 +214,6 @@ func eqIDs(a, b []string) bool {
 	}
 	return true
 }
-
-// ------------------------------------------------------------------ tests
 
 // TestSortFallbackAcceptsUnknownToken: under SortFallback, `reviews:sort(bogus)`
 // resolves without error and yields EXACTLY the order of an include with no sort.

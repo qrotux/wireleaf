@@ -225,11 +225,10 @@ func (n *IRNode) MarshalJSON() ([]byte, error) {
 	}
 
 	// structure
-	// An object with ZERO properties omits "properties" entirely (and, as ever,
-	// an empty "required"). Decided at Task 13 for the golden documents:
-	// {"type":"object"} must round-trip to itself, and `"properties":{}` on
-	// every annotation-only or additionalProperties-only object is noise that
-	// diffs badly. An empty object is still an object.
+	// An object with ZERO properties omits "properties" entirely (and an empty
+	// "required"): {"type":"object"} must round-trip to itself, and
+	// `"properties":{}` on every annotation-only or additionalProperties-only
+	// object is noise that diffs badly.
 	if n.Kind == KindObject && len(n.Props) > 0 {
 		w.key("properties")
 		w.buf.WriteByte('{')
