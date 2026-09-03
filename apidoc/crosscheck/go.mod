@@ -3,7 +3,7 @@ module github.com/qrotux/wireleaf/apidoc/crosscheck
 go 1.26
 
 require (
-	github.com/qrotux/wireleaf v0.2.0
+	github.com/qrotux/wireleaf v0.2.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 )
 
