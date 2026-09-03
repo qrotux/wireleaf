@@ -4,9 +4,11 @@
 
 `include` turns a client's `?include=` / `?exclude=` strings into wire JSON
 bytes: parse, resolve into a validated plan against a declared resource graph,
-materialize with level-batched child loading. The package is transport-free
-and DB-free — every round-trip goes through fetcher closures the application
-supplies. `graph` is the typed builder producing the `Resource`/`Edge`/
+materialize with level-batched child loading. The engine is transport-free
+and DB-free; `Ctx.Request` carries an HTTP-shaped snapshot (stdlib types
+only) that an adapter fills and application hooks read — every round-trip
+still goes through fetcher closures the application supplies. `graph` is the
+typed builder producing the `Resource`/`Edge`/
 `Registry` values this package consumes (`graph.Compile`'s `*graph.Graph`
 implements `include.Registry`); `apidoc` reads the same declarations to emit
 OpenAPI components.
@@ -187,10 +189,22 @@ join.
 type Ctx struct {
     Context  context.Context  // nil → context.Background()
     Registry Registry         // nil only valid for plans without child edges
+    Request  *Request         // HTTP snapshot an adapter fills; nil outside HTTP
     Env      any              // application per-request state; opaque to the engine
     Marshal  MarshalFunc      // nil → MarshalNoEscape
     Policies Policies         // materialize-time fallbacks; zero value = defaults
 }                             // + an unexported mutex-guarded loader cache
+
+type Request struct {
+    Method      string            // "GET"
+    Path        string            // the URL path as requested: "/books/b1"
+    Route       string            // the matched template: "/books/{id}"
+    OperationID string            // the operation's id when the framework has one
+    PathParams  map[string]string // {"id": "b1"}
+    Query       url.Values
+    Header      http.Header       // canonical keys
+    RemoteAddr  string
+}
 ```
 
 One `Ctx` is shared by every fetcher of a request and is **read-only** for
@@ -199,6 +213,18 @@ concurrently — per-request writes belong behind the application's own
 synchronization in `Env`. `Ctx` contains a mutex: always pass `*Ctx`, never
 copy it by value. The zero value is usable.
 
+- `Request` is RAW and UNTRUSTED client input: a header is whatever the
+  client (or the edge proxy) sent. Interpreted, trusted per-request state
+  (the authenticated viewer, the tenant) belongs in `Env`, not `Request`.
+  Only stdlib types (`net/http`, `net/url`) — the engine stays free of any
+  HTTP framework. It is `nil` outside HTTP (tests, workers, CLIs); read it
+  through the nil-safe accessors below rather than the field directly.
+  - `func (c *Ctx) Header(name string) string` — one request header via
+    `http.Header.Get` (canonicalized), `""` when there is no `Request`.
+  - `func (c *Ctx) PathParam(name string) string` — one matched path
+    parameter, `""` when absent or there is no `Request`.
+  - `func (c *Ctx) QueryValue(name string) string` — the first value of one
+    query parameter, `""` when absent or there is no `Request`.
 - `func (c *Ctx) Rows() int` — documents materialized so far in this request,
   root included; the actual-cost counterpart of `PlanNode.Cost` for cost-based
   rate limiting. The counter is the second engine-written field on `Ctx`

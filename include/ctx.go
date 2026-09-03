@@ -2,6 +2,8 @@ package include
 
 import (
 	"context"
+	"net/http"
+	"net/url"
 	"sync"
 )
 
@@ -105,6 +107,24 @@ type FetchByParents func(c *Ctx, parentIDs []string, q EdgeQuery) (map[string]Pa
 // MarshalFunc serializes one wire value into JSON bytes.
 type MarshalFunc func(v any) ([]byte, error)
 
+// Request is the HTTP-shaped snapshot of the request being served, filled by
+// an adapter and read by Wire functions, Guards, Enrich hooks and fetchers.
+// It is RAW and UNTRUSTED client input: a header is whatever the client (or
+// the edge proxy) sent. Interpreted, trusted per-request state (the
+// authenticated viewer, the tenant) belongs in Ctx.Env. Only stdlib types:
+// the engine stays free of any HTTP framework. nil outside HTTP (tests,
+// workers, CLIs) — use the Ctx accessors, which tolerate that.
+type Request struct {
+	Method      string            // "GET"
+	Path        string            // the URL path as requested: "/books/b1"
+	Route       string            // the matched template: "/books/{id}"
+	OperationID string            // the operation's id when the framework has one
+	PathParams  map[string]string // {"id": "b1"}
+	Query       url.Values
+	Header      http.Header // canonical keys
+	RemoteAddr  string
+}
+
 // Ctx is the per-request context threaded through every engine call.
 //
 // One Ctx is shared by every fetcher of a request and MUST be treated as
@@ -129,6 +149,9 @@ type Ctx struct {
 	Context context.Context
 	// Registry locates fetchers; nil is valid only for plans without child edges.
 	Registry Registry
+	// Request is the HTTP request snapshot an adapter fills; nil outside HTTP.
+	// Read it through Header / PathParam / QueryValue, which tolerate nil.
+	Request *Request
 	// Env carries application per-request state (viewer identity, locale,
 	// base URLs, request-scoped caches). The engine never reads it; the
 	// closures installed by graph.Serialize and graph.Enrich, Edge.Guard and
@@ -166,6 +189,30 @@ type Ctx struct {
 // request so far, root documents included — the actual-cost counterpart of
 // PlanNode.Cost, for cost-based rate limiting.
 func (c *Ctx) Rows() int { return c.rows }
+
+// Header returns one request header ("" when there is no Request).
+func (c *Ctx) Header(name string) string {
+	if c.Request == nil || c.Request.Header == nil {
+		return ""
+	}
+	return c.Request.Header.Get(name)
+}
+
+// PathParam returns one matched path parameter ("" when absent).
+func (c *Ctx) PathParam(name string) string {
+	if c.Request == nil {
+		return ""
+	}
+	return c.Request.PathParams[name]
+}
+
+// QueryValue returns the first value of one query parameter ("" when absent).
+func (c *Ctx) QueryValue(name string) string {
+	if c.Request == nil || c.Request.Query == nil {
+		return ""
+	}
+	return c.Request.Query.Get(name)
+}
 
 // LoaderState returns this request's state object for key, creating it with mk
 // on first use. The map and the entry are created under Ctx's mutex, so the
