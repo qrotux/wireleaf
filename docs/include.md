@@ -389,6 +389,61 @@ All three run `ResolvePlan` first (400-before-fetch), then delegate to
 - `HydrateEntity` is for POST/PATCH: the doc is already in memory, no root
   fetch.
 
+### Hydrator
+
+`Hydrator` is the bound form of the three facades: root, registry and options
+are captured once, the raw `?include=` string is parsed inside, and the
+by-id fetcher comes from the registry instead of a caller-supplied closure.
+
+```go
+func Bind(root Resource, reg Registry, opts Options) *Hydrator
+
+func (h *Hydrator) Root() Resource
+func (h *Hydrator) ByID(ctx *Ctx, id string, inc string) (json.RawMessage, error)
+func (h *Hydrator) Query(ctx *Ctx, q QueryArgs, inc string, fetch ListFetcher) (QueryResult, error)
+func (h *Hydrator) Hydrate(ctx *Ctx, doc any, inc string) (json.RawMessage, error)
+```
+
+`Bind` panics on a nil root or registry (a wiring error, not a request error);
+a zero `Options` means `DefaultOptions`. Every method accepts a nil `ctx` —
+it becomes `&Ctx{Registry: reg}` — and fills in `ctx.Registry` from the bound
+registry when the caller left it nil.
+
+- `ByID` parses the include string, resolves the plan (still
+  400-before-fetch), then takes the fetcher from `reg.FetchByIDs(root)` and
+  calls it with `[]string{id}`. No fetcher registered for the node is a wiring
+  error (`include: node %q has no FetchByIDs fetcher`); zero rows back is
+  `*Error{Code: NOT_FOUND, Status: 404}`; more than one row for one id is a
+  fetcher bug and errors out.
+- `Query` is the list path over a `ListFetcher`. It applies the same budget
+  pre-check as `HydrateByQuery` (a known `q.Limit` against `plan.Cost` and
+  `plan.MaxRows`) before the fetcher runs, and copies `NextCursor` /
+  `PrevCursor` from the page into the `QueryResult` alongside `Total` /
+  `HasMore`, echoing `q.Page` / `q.Limit`.
+- `Hydrate` is the POST/PATCH path: materializes an already-loaded document.
+
+```go
+type ListFetcher func(ctx *Ctx, q QueryArgs) (ListPage, error)
+
+type ListPage struct {
+    Docs       []any
+    Total      int  // offset mode: total rows; cursor mode: 0 = unknown
+    HasMore    bool
+    NextCursor string // opaque token in cursor mode; "" = none
+    PrevCursor string
+}
+```
+
+`ListFetcher` is the cursor-aware sibling of `RootFetcher`: the same
+mode-agnostic contract, with the continuation tokens returned in the page
+rather than dropped. Offset-vs-cursor stays the closure's business.
+
+Prefer the unbound facades when you need something `Hydrator` deliberately
+does not expose: an exclude list, the resolved `*PlanNode` back (for
+`HasInclude` and computed-edge splicing), an already-parsed `IncludeTree`, a
+per-request `Options`, or a by-id fetch that is not the registry's
+`FetchByIDs`.
+
 ## Inputs
 
 A root resource's **inputs** are the list parameters it accepts and the keys it
