@@ -4,9 +4,9 @@ go 1.26
 
 require (
 	github.com/danielgtaylor/huma/v2 v2.39.1
-	github.com/qrotux/wireleaf v0.1.0
-	github.com/qrotux/wireleaf/adapters/huma v0.1.0
-	github.com/qrotux/wireleaf/reflector v0.1.0
+	github.com/qrotux/wireleaf v0.2.0
+	github.com/qrotux/wireleaf/adapters/huma v0.2.0
+	github.com/qrotux/wireleaf/reflector v0.2.0
 )
 
 require (

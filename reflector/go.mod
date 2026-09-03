@@ -3,7 +3,7 @@ module github.com/qrotux/wireleaf/reflector
 go 1.26
 
 require (
-	github.com/qrotux/wireleaf v0.1.0
+	github.com/qrotux/wireleaf v0.2.0
 	github.com/swaggest/jsonschema-go v0.3.79
 )
 
