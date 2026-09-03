@@ -32,6 +32,9 @@ func Bind(root Resource, reg Registry, opts Options) *Hydrator {
 // Root returns the bound resource.
 func (h *Hydrator) Root() Resource { return h.root }
 
+// ctx writes into the caller's Ctx (the third sanctioned exception on Ctx):
+// a shallow copy would split State and the row counter between two values,
+// and Ctx carries a mutex, so it cannot be copied at all.
 func (h *Hydrator) ctx(c *Ctx) *Ctx {
 	if c == nil {
 		c = &Ctx{}

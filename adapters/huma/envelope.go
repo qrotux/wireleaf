@@ -135,6 +135,10 @@ func errorFragment() map[string]any {
 // an ERROR for a conflicting one (an application component squatting the name).
 // The pagination components are bound to their Go wire types so the bridge can
 // serve them typed; Error has no wire type and is served as one opaque fragment.
+// libraryComponents are the names registerLibraryComponents owns; New refuses
+// a graph node that would take one of them.
+var libraryComponents = []string{CursorPaginationComponent, CursorPaginationTotalComponent, PagePaginationComponent, ErrorComponent}
+
 func registerLibraryComponents(c *apidoc.Components) {
 	install := func(name string, frag map[string]any, t reflect.Type) {
 		if err := c.RegisterReflected(name, apidoc.RawFragment(frag).IR(), t); err != nil {

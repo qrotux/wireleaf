@@ -198,8 +198,9 @@ loudly:
   Attach` — there is no huma API to register on yet.
 - A second `Attach` panics with `adapters/huma: Attach called twice` — it would
   install the middleware and the document hook twice over.
-- `Register` walks the output type `O` (through pointers, slices, arrays, maps
-  and struct fields) and panics on a `Node[W]` wrapper no `Bind` registered.
+- `Register` walks the output type `O` (through pointers, slices, arrays, map
+  keys and values, and struct fields) and panics on a `Node[W]` wrapper —
+  this package's or the core `apidoc.Node[W]` — no `Bind` registered.
   Without the guard the same wiring bug surfaces later, deep inside huma's
   reflection, as `Node[W].Schema` failing to find W's component.
 
@@ -207,7 +208,10 @@ loudly:
 g.Roots())` collects the reachable set from the roots and its fragments are
 added, in sorted order, to a fresh `apidoc.NewComponents()`; the config is
 `NewConfig(title, version, WithRegistry(c), extra…)`. A zero `opts` means
-`include.DefaultOptions`. Any emission failure is a wiring error and panics.
+`include.DefaultOptions`. Any emission failure is a wiring error and panics, as
+does a graph node named like a library component (`Error`, `PagePagination`,
+`CursorPagination`, `CursorPaginationTotal`): `adapters/huma: node "Error"
+collides with the library component of the same name`.
 
 ### Include and Inputs
 
@@ -408,8 +412,10 @@ errors or parameters into the next.
   description as `"CODE (HTTP n): message"` separated by `"; "`, and the body
   is a `$ref` to the `Error` component. Two `Errors` calls (or a base template
   plus an `Errors` call) contributing to the same status merge their
-  descriptions instead of one overwriting the other; a duplicate def is not
-  repeated. A pre-existing response at that status whose body is not the
+  **declarations** — kept in `Operation.Metadata`, never re-parsed from the
+  rendered description, so a message containing `"; "` survives — instead of
+  one overwriting the other; a duplicate def is not repeated. A pre-existing
+  response at that status whose body is not the
   `Error` `$ref` is treated as the application's own and is replaced, not
   merged into. No last-writer-wins on distinct codes.
 - **`ErrorDef.Err(detail)`** returns the runtime error the def documents: a

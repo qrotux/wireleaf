@@ -27,8 +27,10 @@ func (r *stubRes) Enrich([]any, *include.Ctx) error   { return nil }
 func (r *stubRes) Columns() map[string]include.Column { return r.cols }
 
 // filterRoot is the Author root of the parser tests: string "name", int "age",
-// bool "active" (all filterable); the to-many filterable edge "works" to Book
-// (string "title") and the to-one filterable edge "self" back to Author.
+// bool "active" (all filterable), string "email" (bound, NOT filterable); the
+// to-many filterable edge "works" to Book (string "title"), which has its own
+// to-many filterable edge "reviews" to Review (string "text"), and the to-one
+// filterable edge "self" back to Author.
 func filterRoot(t *testing.T) include.Resource {
 	t.Helper()
 	str := reflect.TypeFor[string]()
@@ -36,10 +38,17 @@ func filterRoot(t *testing.T) include.Resource {
 		"name":   {Col: "name", Type: str, Filterable: true},
 		"age":    {Col: "age", Type: reflect.TypeFor[int](), Filterable: true},
 		"active": {Col: "active", Type: reflect.TypeFor[bool](), Filterable: true},
+		"email":  {Col: "email", Type: str},
+	}}
+	review := &stubRes{name: "Review", cols: map[string]include.Column{
+		"text": {Col: "text", Type: str, Filterable: true},
 	}}
 	book := &stubRes{name: "Book", cols: map[string]include.Column{
 		"title": {Col: "title", Type: str, Filterable: true},
 	}}
+	book.edges = map[string]include.Edge{
+		"reviews": {Target: func() include.Resource { return review }, Many: true, Backref: "bookId", Filterable: true},
+	}
 	author.edges = map[string]include.Edge{
 		"self":  {Target: func() include.Resource { return author }, Filterable: true},
 		"works": {Target: func() include.Resource { return book }, Many: true, Backref: "authorId", Filterable: true},

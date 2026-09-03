@@ -19,6 +19,7 @@ import (
 	"maps"
 	"net/http"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -81,7 +82,11 @@ func Op(base humav2.Operation, opts ...OpOpt) humav2.Operation {
 //
 // One response per status, not per code, because OpenAPI keys responses by
 // status: two codes sharing a status are one response with a compound
-// description, not a silent last-writer-wins.
+// description, not a silent last-writer-wins. Successive Errors on one status
+// merge by DECLARATION, kept in Operation.Metadata (yaml:"-", never served):
+// re-parsing the rendered description would split a message that itself
+// contains "; ". A response at the status that Errors did not build is the
+// application's own and is replaced, declarations and all.
 func Errors(defs ...ErrorDef) OpOpt {
 	return func(op *humav2.Operation) {
 		if len(defs) == 0 {
@@ -90,13 +95,26 @@ func Errors(defs ...ErrorDef) OpOpt {
 		if op.Responses == nil {
 			op.Responses = map[string]*humav2.Response{}
 		}
+		m := maps.Clone(op.Metadata) // never write through a shared base's map
+		if m == nil {
+			m = map[string]any{}
+		}
+		prevDefs, _ := m[metaErrorDefs].([]ErrorDef)
 		byStatus := map[int][]ErrorDef{}
+		for _, def := range prevDefs {
+			byStatus[def.Status] = append(byStatus[def.Status], def)
+		}
 		var statuses []int
 		for _, def := range defs {
-			if _, seen := byStatus[def.Status]; !seen {
+			if !slices.Contains(statuses, def.Status) {
 				statuses = append(statuses, def.Status)
+				if prev := op.Responses[strconv.Itoa(def.Status)]; prev == nil || !isErrorRefResponse(prev) {
+					byStatus[def.Status] = nil // not ours any more: the earlier declarations are stale
+				}
 			}
-			byStatus[def.Status] = append(byStatus[def.Status], def)
+			if !slices.Contains(byStatus[def.Status], def) {
+				byStatus[def.Status] = append(byStatus[def.Status], def)
+			}
 		}
 		sort.Ints(statuses)
 		for _, status := range statuses {
@@ -104,19 +122,25 @@ func Errors(defs ...ErrorDef) OpOpt {
 			for _, def := range byStatus[status] {
 				parts = append(parts, fmt.Sprintf("%s (HTTP %d): %s", def.Code, def.Status, def.Message))
 			}
-			key := strconv.Itoa(status)
-			if prev := op.Responses[key]; prev != nil && isErrorRefResponse(prev) {
-				parts = append(strings.Split(prev.Description, "; "), parts...)
-			}
-			op.Responses[key] = &humav2.Response{
-				Description: strings.Join(dedupe(parts), "; "),
+			op.Responses[strconv.Itoa(status)] = &humav2.Response{
+				Description: strings.Join(parts, "; "),
 				Content: map[string]*humav2.MediaType{
 					"application/json": {Schema: &humav2.Schema{Ref: apidoc.RefPrefix + ErrorComponent}},
 				},
 			}
 		}
+		var all []ErrorDef
+		for _, status := range slices.Sorted(maps.Keys(byStatus)) {
+			all = append(all, byStatus[status]...)
+		}
+		m[metaErrorDefs] = all
+		op.Metadata = m
 	}
 }
+
+// metaErrorDefs is the operation-metadata key holding every ErrorDef the
+// Errors decorators of the operation declared so far.
+const metaErrorDefs = "wireleaf:error-defs"
 
 // isErrorRefResponse reports whether r is one Errors built: a JSON body that
 // is a bare $ref to the Error component. Only those are merged; anything else
@@ -124,20 +148,6 @@ func Errors(defs ...ErrorDef) OpOpt {
 func isErrorRefResponse(r *humav2.Response) bool {
 	mt := r.Content["application/json"]
 	return mt != nil && mt.Schema != nil && mt.Schema.Ref == apidoc.RefPrefix+ErrorComponent
-}
-
-// dedupe removes empty and repeated parts, preserving first-seen order.
-func dedupe(parts []string) []string {
-	seen := make(map[string]bool, len(parts))
-	out := parts[:0]
-	for _, p := range parts {
-		if p == "" || seen[p] {
-			continue
-		}
-		seen[p] = true
-		out = append(out, p)
-	}
-	return out
 }
 
 // IncludeParam appends the ?include= query parameter for res: an optional

@@ -567,3 +567,16 @@ func keysOfResponses(m map[string]*humav2.Response) []string {
 	}
 	return out
 }
+
+// TestErrorsMergeKeepsAMessageWithTheSeparator pins that merging is by
+// declaration, not by re-parsing the previous description: a message that
+// itself contains "; " must survive a second Errors on the same status without
+// being split, and a repeated declaration must not render twice.
+func TestErrorsMergeKeepsAMessageWithTheSeparator(t *testing.T) {
+	a := ErrorDef{Status: 404, Code: "A", Message: "gone; try later"}
+	b := ErrorDef{Status: 404, Code: "B", Message: "b"}
+	op := Op(humav2.Operation{}, Errors(a), Errors(a, b))
+	if got, want := op.Responses["404"].Description, "A (HTTP 404): gone; try later; B (HTTP 404): b"; got != want {
+		t.Fatalf("description = %q, want %q", got, want)
+	}
+}

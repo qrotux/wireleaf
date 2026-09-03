@@ -14,19 +14,21 @@ import (
 // RawInputs is the client's list parameters as bound by the transport. Include
 // is NOT here: the include string is parsed by the Hydrator method that
 // consumes it. Where arrives already parsed (filters.ParseJSON or
-// filters.ParseQuery); nil means no filter.
+// filters.ParseQuery); nil means no filter. Fields are in the order
+// ResolveInputs checks them.
 type RawInputs struct {
 	Sort   string
+	Limit  int
 	Page   int
 	Cursor string
-	Limit  int
 	Where  Filter
 }
 
 // ResolveInputs validates raw against root's Inputs (DefaultInputs for a node
 // that declared none) and returns the QueryArgs to hand a fetcher. Every
 // rejection is a *Error with status 400: INVALID_SORT, INVALID_PAGINATION or
-// a filter code. On success Limit is never zero.
+// a filter code. On success Limit is never zero: InputsOf settles a zero
+// DefaultLimit before it is read.
 func ResolveInputs(root Resource, raw RawInputs, opts Options) (QueryArgs, error) {
 	in, _ := InputsOf(root)
 	var q QueryArgs
@@ -37,7 +39,9 @@ func ResolveInputs(root Resource, raw RawInputs, opts Options) (QueryArgs, error
 	}
 	if sortKey != "" {
 		if !in.Sort.Enabled {
-			return q, NewError(INVALID_SORT, clientEcho(raw.Sort))
+			// sortKey, not raw.Sort: a declared Default on a node whose sort
+			// is disabled fails here with nothing from the client to echo.
+			return q, NewError(INVALID_SORT, clientEcho(sortKey))
 		}
 		key := strings.TrimPrefix(sortKey, "-")
 		sql, ok := in.Sort.Keys[key]

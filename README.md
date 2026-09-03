@@ -511,12 +511,12 @@ traversed — to-one as a join, reverse / to-many with a quantifier per hop
 `filters.ParseJSON` reads a JSON `where` node and `filters.ParseQuery` the
 `?where[field][op]=` bracket query string — the `include/filters` subpackage,
 where syntax lives apart from judgement; both produce an `include.Filter` tree
-over client-side names. `include.ResolveFilter`
-then checks that tree against the compiled graph and returns SQL-side names
-only — so the parsers never decide what is filterable, and a hand-written
-parser can still feed `ResolveFilter` the same tree.
-`include.FilterOpsFor` reports the operators legal for a column type, which is
-what `apidoc`'s `FilterSyntax` documentation is generated from.
+over client-side names. `include.ResolveFilter` then checks that tree against
+the compiled graph and returns SQL-side names only — so the parsers never
+decide what is filterable, and a hand-written parser can still feed
+`ResolveFilter` the same tree. `include.FilterOpsFor` reports the operators
+legal for a column type, which is what `apidoc`'s `FilterSyntax` documentation
+is generated from.
 
 Rendering the resolved tree as SQL (joins, `EXISTS`) is the application
 adapter's job; the resolved filter reaches its root fetcher through
@@ -529,8 +529,12 @@ See [`docs/include.md` → Filters](docs/include.md#filters).
 
 ## Errors
 
-Planning failures are `*include.Error{Code, Path, Status}` — a structured value
-the HTTP layer maps onto its own error type. `Status` defaults to 400.
+Planning failures are `*include.Error{Code, Path, Status, Reason}` — a
+structured value the HTTP layer maps onto its own error type. `Status` defaults
+to 400. `Reason` is set only where `Path` cannot say which half of the client's
+spelling is wrong — today the quantifier faults of `INVALID_FILTER`, as one of
+the `include.Reason*` constants — and is `""` everywhere else; `Error()` shows
+it in brackets after the path.
 
 | Code | Status | Meaning |
 | --- | --- | --- |
@@ -539,7 +543,7 @@ the HTTP layer maps onto its own error type. `Status` defaults to 400.
 | `INCLUDE_TOO_EXPENSIVE` | 400 | The plan's static row estimate exceeds `Limits.MaxCost`. Lower `:limit()` values or drop a nested collection. |
 | `INCLUDE_BUDGET_EXCEEDED` | 400 | Rows materialized (or `Cost × page size` in `HydrateByQuery`) exceed `Limits.MaxRows`. |
 | `NOT_FOUND` | 404 | `HydrateByID`'s fetch closure returned a nil doc. |
-| `INVALID_FILTER` | 400 | `ResolveFilter`: unknown/non-filterable edge or column, root without columns, empty group, a to-many hop without a quantifier, a quantifier on a to-one hop, an unknown quantifier, unknown operator or operator illegal for the column type (`Path` is `"a.b.field"`, the path up to the bad edge, `"a.b.field:op"`, or `"a.b:quant"`). |
+| `INVALID_FILTER` | 400 | `ResolveFilter`: unknown/non-filterable edge or column, root without columns, empty group, a to-many hop without a quantifier, a quantifier on a to-one hop, an unknown quantifier, unknown operator or operator illegal for the column type (`Path` is `"a.b.field"`, the path up to the bad edge, `"a.b.field:op"`, or `"a.b:quant"`). A quantifier fault also carries `Reason`: `unknown-quantifier`, `quantifier-on-to-one`, `quantifier-required` from the resolver; `quantifier-on-unknown-path`, `quantifier-without-many-hop`, `quantifier-ambiguous`, `quantifier-twice` from the parsers' field-suffix sugar. |
 | `FILTER_TOO_DEEP` | 400 | `Limits.MaxFilterDepth`, `Limits.MaxFilterMany` **or** `Limits.MaxFilterNodes` exceeded. |
 | `FILTER_TOO_EXPENSIVE` | 400 | `Limits.MaxFilterSubqueries` exceeded: the filter tree's to-many hops, summed over every condition, are more correlated subqueries than allowed. Drop conditions that cross to-many edges. |
 

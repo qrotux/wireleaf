@@ -408,7 +408,10 @@ func (h *Hydrator) Hydrate(ctx *Ctx, doc any, inc string) (json.RawMessage, erro
 `Bind` panics on a nil root or registry (a wiring error, not a request error);
 a zero `Options` means `DefaultOptions`. Every method accepts a nil `ctx` —
 it becomes `&Ctx{Registry: reg}` — and fills in `ctx.Registry` from the bound
-registry when the caller left it nil.
+registry when the caller left it nil. That fill-in **writes into the caller's
+`Ctx`** (the third sanctioned exception to its read-only contract, next to
+`State` and the row counter), unsynchronized: a `Ctx` shared by several
+`Hydrator`s, or by one across goroutines, must carry its `Registry` already.
 
 - `ByID` parses the include string, resolves the plan (still
   400-before-fetch), then takes the fetcher from `reg.FetchByIDs(root)` and
@@ -496,16 +499,21 @@ edge, which `Fields` does not list) against the resource graph itself.
 `InputsOf` returns `DefaultInputs()` and `false` for a resource that is not an
 `InputSource`. Callers treat the two cases identically: "declared nothing" is
 one well-defined contract — offset pagination with `DefaultPageLimit` 20 and
-`DefaultMaxPageLimit` 100, **no sort, no filter** — not a special case.
+`DefaultMaxPageLimit` 100, **no sort, no filter** — not a special case. A
+declared `Page` with zeros is settled the way `graph.Compile` settles a
+`PageInput`: a zero `Mode` is offset, a zero `MaxLimit` is 100, a zero
+`DefaultLimit` is 20 capped by `MaxLimit`. `ResolveInputs` and
+`apidoc.InputParams` both read through `InputsOf`, so neither ever sees a zero
+limit, whoever wrote the `InputSource`.
 
 ### ResolveInputs
 
 ```go
-type RawInputs struct {
+type RawInputs struct { // in the order ResolveInputs checks them
     Sort   string
+    Limit  int
     Page   int
     Cursor string
-    Limit  int
     Where  Filter // already parsed (filters.ParseJSON / ParseQuery); nil = none
 }
 
@@ -520,12 +528,12 @@ so the same request is judged the same way whichever transport bound it.
 by the `Hydrator` method that consumes it.
 
 Every rejection is a `*Error` with status 400. On success `Limit` is never
-zero, for an `Inputs` built by `graph.Compile` or `DefaultInputs` (both of
-which give `Page.DefaultLimit` a non-zero value).
+zero: `InputsOf` settles a zero `Page.DefaultLimit` before the resolver reads
+it.
 
 | Parameter | Rule |
 | --- | --- |
-| `Sort` | `""` → `Inputs.Sort.Default`, resolved through `Keys` (wire → SQL, a leading `-` kept); a client key resolved the same way. An unknown key, or any non-empty key when sort is disabled → `INVALID_SORT`, `Path` = the clipped client key. Sort disabled *and* nothing to resolve → `Sort` stays `""`. |
+| `Sort` | `""` → `Inputs.Sort.Default`, resolved through `Keys` (wire → SQL, a leading `-` kept); a client key resolved the same way. An unknown key, or any non-empty key when sort is disabled → `INVALID_SORT`, `Path` = the clipped key being resolved (the client's, or the declared `Default` when the client sent none). Sort disabled *and* nothing to resolve → `Sort` stays `""`. |
 | `Limit` | `0` → `Page.DefaultLimit`; `< 0` or `> Page.MaxLimit` → `INVALID_PAGINATION` (`Path` `limit=<n>`). |
 | `Page`/`Cursor`, offset mode | `Page 0` → `1`; `Page < 0` → `INVALID_PAGINATION` (`page=<n>`); a non-empty `Cursor` → `INVALID_PAGINATION` (`cursor=<v>`, clipped). |
 | `Page`/`Cursor`, cursor mode | `Cursor` copied through opaquely; `Page != 0` → `INVALID_PAGINATION` (`page=<n>`); the resulting `QueryArgs.Page` is `0`. |
@@ -609,7 +617,9 @@ Resolution rules:
   conditions + groups are `FILTER_TOO_DEEP`; everything else the graph does
   not admit is `INVALID_FILTER` with `Path` = `"author.name"`, the path up to
   the offending hop (`"reviews"` for a to-many hop without a quantifier),
-  `"author:any"` / `"reviews:some"` for a quantifier fault, or
+  `"author:any"` / `"reviews:some"` for a quantifier fault (with `Reason`
+  `quantifier-on-to-one` / `unknown-quantifier`; a bare to-many hop is
+  `quantifier-required`), or
   `"author.name:like"` for an operator fault. Text that was not found in the
   graph (an unknown key, field, operator or quantifier) is echoed bounded to
   16 bytes plus `…`; a name the graph does know goes back whole.
@@ -669,8 +679,12 @@ untouched, for `ResolveFilter` to reject with a bounded path — so there is one
 place a name is judged, not two. Its own faults are
 `*Error{Code: INVALID_FILTER, Status: 400}` with `Path` in the conventions
 above and nothing else in it: the offending key, `"<key>:<op>"` for an operator
-fault, `"<path>:<quant>"` for a quantifier fault, and `""` for a structural
-fault with no key to name. Client text is echoed through the same 16-byte bound
+fault, `"<path>:<quant>"` for a quantifier fault — with `Reason` saying
+which: `quantifier-on-unknown-path`, `quantifier-without-many-hop`,
+`quantifier-ambiguous` (several to-many hops; quantify each segment instead)
+or `quantifier-twice` — and `""` for a structural fault with no key to name. A group that is not a non-empty array (`{"and":
+null}`, `{"or": []}`) is refused here, naming the group key, rather than by
+`ResolveFilter` with a path that would not. Client text is echoed through the same 16-byte bound
 the resolver uses, and a multi-key object reports its first key plus a count
 rather than all of them — a client never sizes the 400 body. Values pass
 through as `encoding/json` decoded them (a JSON number is a `float64` even for
@@ -710,7 +724,8 @@ A URL value is a string, so this parser is the one place that coerces, by the
 
 `in` and `nin` split the value on `,` into a `[]any` of coerced members
 (`where[age][in]=1,2`) — which is also the limit of the syntax: a value that
-itself contains a comma needs the JSON spelling. The widths are the AST's, not
+itself contains a comma needs the JSON spelling, and an empty member
+(`1,,2`) is a fault with `Path` `"<path>:"`, not a member `""`. The widths are the AST's, not
 the column's; narrowing to the column is the adapter's job, as it is for the
 `float64` a JSON number decodes to.
 
@@ -719,7 +734,10 @@ text `Path`, and in the same conventions: a condition fault names the path —
 `"<path>:<op>"` for an unknown operator, `"<path>:<value>"` for a value the
 column's type refuses — while a structural fault, which has read no path yet,
 names the whole bracket key: a malformed key (`where[title]`, `where[]`,
-`where[title][eq][x]`), a key given twice, a non-numeric group index. Unknown edges and fields still pass through to
+`where[title][eq][x]`, a `[` opened inside a segment), a key given twice, a
+group key without a path (`where[or][0]`), a group index that is not plain
+digits (`a`, `00`, `+1` — the last two would otherwise merge into the members
+of `0` and `1`). Unknown edges and fields still pass through to
 `ResolveFilter`, where the value stays a string.
 
 `FilterOpsFor` reads the operator ↔ column-type matrix forwards: the subset of
@@ -970,8 +988,14 @@ type Policies struct {
 
 ## Errors
 
-Planning and facade failures are `*include.Error{Code, Path, Status}`
-(`NewError(code, path)` defaults `Status` to 400):
+Planning and facade failures are `*include.Error{Code, Path, Status, Reason}`
+(`NewError(code, path)` defaults `Status` to 400; `WithReason` sets `Reason`
+at the construction site). `Reason` is one of the `Reason*` constants and is
+set only where `Path` cannot say which half of the client's spelling is wrong
+— the quantifier faults below — and `""` for every other fault, so code that
+compares the three older fields is unaffected. `Error()` renders it in
+brackets between the path and the status:
+`INVALID_FILTER: author:any [quantifier-on-to-one] (status 400)`.
 
 | Code | Status | When |
 | --- | --- | --- |
@@ -979,7 +1003,7 @@ Planning and facade failures are `*include.Error{Code, Path, Status}`
 | `INCLUDE_TOO_DEEP` | 400 | `MaxDepth` **or** `MaxNodes` exceeded — one code for both, the message distinguishes |
 | `INCLUDE_TOO_EXPENSIVE` | 400 | the plan's static row estimate (`PlanNode.Cost`) exceeds `MaxCost`; the message carries both numbers |
 | `INCLUDE_BUDGET_EXCEEDED` | 400 | rows materialized exceed `MaxRows` — mid-hydration, or up front in `HydrateByQuery` as `Cost × QueryArgs.Limit` |
-| `INVALID_FILTER` | 400 | `ResolveFilter`: unknown/non-filterable edge or column, root without columns, empty group, a to-many hop without a quantifier, a quantifier on a to-one hop, an unknown quantifier, unknown operator or operator illegal for the column type. For a leaf fault `Path` is `"a.b.field"`, the path up to the bad edge, `"a.b.field:op"`, or `"a.b:quant"`; for a **structural** fault (empty group, nil member, nil node) it is the node's position in the tree — `"and[1]"`, `"or[0].and[2]"` — since group members carry no names. The root has no position: an empty root-level group reports `""` |
+| `INVALID_FILTER` | 400 | `ResolveFilter`: unknown/non-filterable edge or column, root without columns, empty group, a to-many hop without a quantifier, a quantifier on a to-one hop, an unknown quantifier, unknown operator or operator illegal for the column type. For a leaf fault `Path` is `"a.b.field"`, the path up to the bad edge, `"a.b.field:op"`, or `"a.b:quant"` — the last two quantifier shapes also carry `Reason` (`quantifier-required` for the bare hop, `unknown-quantifier` / `quantifier-on-to-one` for `"a.b:quant"`); for a **structural** fault (empty group, nil member, nil node) it is the node's position in the tree — `"and[1]"`, `"or[0].and[2]"` — since group members carry no names. The root has no position: an empty root-level group reports `""` |
 | `FILTER_TOO_DEEP` | 400 | `MaxFilterDepth`, `MaxFilterMany` **or** `MaxFilterNodes` exceeded; for a too-deep or too-many path `Path` is the client path's keys cut to `MaxFilterDepth+1` segments, each one itself bounded to 16 bytes plus `…`, with a trailing `…` only when segments were actually dropped — so a too-many-hops path (bounded by `MaxFilterDepth` already) always comes back whole and unmarked (a node-count fault carries an empty `Path`) |
 | `FILTER_TOO_EXPENSIVE` | 400 | `ResolveFilter`: the tree's to-many hops, summed over every condition, exceed `MaxFilterSubqueries`. A tree-wide fault, so `Path` is empty; the client fixes it by dropping conditions that cross to-many edges |
 | `INVALID_SORT` | 400 | `ResolveInputs`: a `?sort=` key the node does not accept — sort not enabled, or the key (after an optional leading `-`) is not one of `Inputs.Sort.Keys`. `Path` echoes the client's key, clipped |

@@ -555,6 +555,9 @@ func TestDocTagBecomesDescription(t *testing.T) {
 		t.Fatalf("ReflectComponents: %v", err)
 	}
 	want := map[string]string{"a": "from doc", "b": "same", "c": "only description"}
+	if n := len(got["docTagHolder"].Props); n != len(want) {
+		t.Fatalf("docTagHolder has %d props, want %d", n, len(want))
+	}
 	for _, p := range got["docTagHolder"].Props {
 		if p.Schema.Description != want[p.Name] {
 			t.Errorf("%s: description = %q, want %q", p.Name, p.Schema.Description, want[p.Name])
@@ -565,7 +568,16 @@ func TestDocTagBecomesDescription(t *testing.T) {
 func TestDocTagDisagreementIsAnError(t *testing.T) {
 	_, err := (&reflector.Reflector{}).ReflectComponents(
 		[]reflect.Type{reflect.TypeOf(docTagConflict{})}, nil)
-	if err == nil || !strings.Contains(err.Error(), "doc and description tags disagree") {
-		t.Fatalf("err = %v, want a doc/description disagreement", err)
+	if err == nil || !strings.Contains(err.Error(), "reflector: a: doc and description tags disagree") {
+		t.Fatalf("err = %v, want a doc/description disagreement at the bare field path", err)
 	}
+	_, err = (&reflector.Reflector{}).ReflectComponents(
+		[]reflect.Type{reflect.TypeOf(docTagConflictHolder{})}, nil)
+	if err == nil || !strings.Contains(err.Error(), "reflector: inner.a: doc") {
+		t.Fatalf("err = %v, want the nested field path without the # root", err)
+	}
+}
+
+type docTagConflictHolder struct {
+	Inner docTagConflict `json:"inner"`
 }

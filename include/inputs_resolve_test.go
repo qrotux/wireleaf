@@ -95,3 +95,23 @@ func TestResolveInputsUndeclared(t *testing.T) {
 	_, err = ResolveInputs(root, RawInputs{Where: FilterCond{Field: "name", Op: OpEq, Value: "x"}}, DefaultOptions)
 	wantInputsErr(t, err, INVALID_FILTER, "where")
 }
+
+func TestResolveInputsZeroDeclaredPage(t *testing.T) {
+	res := inputsRes{Resource: filterRoot(t), in: Inputs{}}
+	q, err := ResolveInputs(res, RawInputs{}, DefaultOptions)
+	if err != nil || q.Limit != DefaultPageLimit || q.Page != 1 {
+		t.Fatalf("zero Page: %+v, %v", q, err)
+	}
+	_, err = ResolveInputs(res, RawInputs{Limit: DefaultMaxPageLimit + 1}, DefaultOptions)
+	wantInputsErr(t, err, INVALID_PAGINATION, "limit=101")
+}
+
+// TestResolveInputsDefaultWithSortDisabled: a hand-written InputSource can
+// declare a Default while leaving Sort disabled (graph.Compile refuses the
+// pair). The rejection names the Default, so the fault is attributable even
+// though the client sent no sort.
+func TestResolveInputsDefaultWithSortDisabled(t *testing.T) {
+	res := inputsRes{Resource: filterRoot(t), in: Inputs{Sort: SortInputs{Default: "-name"}}}
+	_, err := ResolveInputs(res, RawInputs{}, DefaultOptions)
+	wantInputsErr(t, err, INVALID_SORT, "-name")
+}

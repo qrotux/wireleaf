@@ -84,9 +84,9 @@ func bracketSegments(key string) ([]string, error) {
 			return nil, include.NewError(include.INVALID_FILTER, clip.Echo(key))
 		}
 		end := strings.IndexByte(rest, ']')
-		if end < 0 || end == 1 {
-			// An unclosed bracket and an empty one are both malformed, and the
-			// key is all there is to name either with.
+		if end < 0 || end == 1 || strings.IndexByte(rest[1:end], '[') >= 0 {
+			// An unclosed bracket, an empty one and one opened inside another
+			// are all malformed, and the key is all there is to name them with.
 			return nil, include.NewError(include.INVALID_FILTER, clip.Echo(key))
 		}
 		segs = append(segs, rest[1:end])
@@ -104,14 +104,18 @@ func buildQueryLevel(root include.Resource, entries []qEntry) (include.Filter, e
 	for _, e := range entries {
 		switch {
 		case len(e.segs) >= 3 && (e.segs[0] == "and" || e.segs[0] == "or"):
-			idx, err := strconv.Atoi(e.segs[1])
-			if err != nil || idx < 0 {
+			idx, ok := groupIndex(e.segs[1])
+			if !ok {
 				return nil, include.NewError(include.INVALID_FILTER, clip.Echo(e.key))
 			}
 			if groups[e.segs[0]] == nil {
 				groups[e.segs[0]] = map[int][]qEntry{}
 			}
 			groups[e.segs[0]][idx] = append(groups[e.segs[0]][idx], qEntry{segs: e.segs[2:], value: e.value, key: e.key})
+		case e.segs[0] == "and" || e.segs[0] == "or":
+			// A group key with too few segments (where[or][0]=x) is a
+			// structural fault, not a condition on a path called "or".
+			return nil, include.NewError(include.INVALID_FILTER, clip.Echo(e.key))
 		case len(e.segs) == 2:
 			c, err := queryCond(root, e)
 			if err != nil {
@@ -156,6 +160,21 @@ func buildQueryLevel(root include.Resource, entries []qEntry) (include.Filter, e
 	return include.FilterAnd(members), nil
 }
 
+// groupIndex reads a group index: plain digits only, so "00" and "+1" do not
+// merge into the members of "0" and "1" the way strconv.Atoi would let them.
+func groupIndex(s string) (int, bool) {
+	if s == "" || (len(s) > 1 && s[0] == '0') {
+		return 0, false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.Atoi(s)
+	return n, err == nil
+}
+
 // queryCond builds one condition from a where[path][op] entry, typing the value
 // by the leaf column when the graph knows the path. A fault here has a path to
 // name, so it names THAT and not the bracket key around it — the convention
@@ -182,8 +201,10 @@ func queryCond(root include.Resource, e qEntry) (include.Filter, error) {
 		parts := strings.Split(e.value, ",")
 		list := make([]any, 0, len(parts))
 		for _, p := range parts {
+			// "1,,2" is a typo, not a member "": the empty string would reach
+			// the adapter as a legitimate value of any string column.
 			v, err := coerceQueryValue(p, colType)
-			if err != nil {
+			if err != nil || p == "" {
 				return nil, include.NewError(include.INVALID_FILTER, clip.Echo(e.segs[0])+":"+clip.Echo(p))
 			}
 			list = append(list, v)

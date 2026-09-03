@@ -43,16 +43,25 @@ func filterPath(root include.Resource, path string) ([]include.FilterStep, strin
 		steps = append(steps, include.FilterStep{Key: key, Quant: q})
 	}
 	_, many, known := walkFilterPath(root, steps)
-	switch {
-	// A field-suffix quantifier is only unambiguous over a known path with
-	// exactly one to-many segment that nobody has already quantified. All
-	// three faults are reported as "<path>:<quant>", the convention
-	// ResolveFilter uses for a quantifier fault.
-	case quant != "" && !known,
-		quant != "" && len(many) != 1,
-		quant != "" && steps[many[0]].Quant != "":
-		return nil, "", include.NewError(include.INVALID_FILTER, clip.Echo(path)+":"+string(quant))
-	case quant != "":
+	if quant != "" {
+		// A field-suffix quantifier is only unambiguous over a known path
+		// with exactly one to-many segment that nobody has already
+		// quantified. Every fault is "<path>:<quant>", the convention
+		// ResolveFilter uses; Reason says which of the four it is.
+		reason := ""
+		switch {
+		case !known:
+			reason = include.ReasonQuantifierOnUnknownPath
+		case len(many) == 0:
+			reason = include.ReasonQuantifierWithoutManyHop
+		case len(many) > 1:
+			reason = include.ReasonQuantifierAmbiguous
+		case steps[many[0]].Quant != "":
+			reason = include.ReasonQuantifierTwice
+		}
+		if reason != "" {
+			return nil, "", include.NewError(include.INVALID_FILTER, clip.Echo(path)+":"+string(quant)).WithReason(reason)
+		}
 		steps[many[0]].Quant = quant
 	}
 	// A to-many segment nobody quantified is `any`, the no-suffix default.

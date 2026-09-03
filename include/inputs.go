@@ -68,6 +68,29 @@ func DefaultInputs() Inputs {
 // an InputSource. Callers treat the two cases identically: "no declaration"
 // is one well-defined behaviour, not a special case.
 func InputsOf(res Resource) (Inputs, bool) {
+	in, ok := inputsOf(res)
+	in.Page = settlePage(in.Page)
+	return in, ok
+}
+
+// settlePage fills the zeros of a declared page contract the way graph.Compile
+// does, so a hand-written InputSource yields the same shape: a zero Mode is
+// offset, a zero MaxLimit the package cap, a zero DefaultLimit the package
+// default capped by MaxLimit. Nothing here can make Limit zero downstream.
+func settlePage(p PageInputs) PageInputs {
+	if p.Mode == "" {
+		p.Mode = PageModeOffset
+	}
+	if p.MaxLimit <= 0 {
+		p.MaxLimit = DefaultMaxPageLimit
+	}
+	if p.DefaultLimit <= 0 {
+		p.DefaultLimit = min(DefaultPageLimit, p.MaxLimit)
+	}
+	return p
+}
+
+func inputsOf(res Resource) (Inputs, bool) {
 	if s, ok := res.(InputSource); ok {
 		return s.Inputs()
 	}

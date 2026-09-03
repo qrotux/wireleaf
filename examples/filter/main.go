@@ -65,9 +65,9 @@ type BookWire struct {
 	Year  int    `json:"year" col:"year,filter"`
 }
 
-// Text is BOUND (the adapter knows its column) but not filterable: a `col`
-// tag without the `filter` option is a projection binding and nothing more.
-// Case 7 below is what a client gets for naming it.
+// ReviewWire binds Text (the adapter knows its column) without making it
+// filterable: a `col` tag without the `filter` option is a projection binding
+// and nothing more. Case 7 below is what a client gets for naming it.
 type ReviewWire struct {
 	ID     string `json:"id" col:"id,filter"`
 	Rating int    `json:"rating" col:"rating,filter"`

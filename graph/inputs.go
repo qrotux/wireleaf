@@ -6,6 +6,7 @@
 package graph
 
 import (
+	"maps"
 	"strings"
 
 	"github.com/qrotux/wireleaf/include"
@@ -55,7 +56,7 @@ func (h *NodeHandle[Row, W]) Inputs(in Inputs) *NodeHandle[Row, W] {
 // compileInputs derives the resolved include.Inputs of one node from its
 // declaration and column bindings, reporting inconsistencies as findings. An
 // undeclared node yields the defaults and false.
-func compileInputs(fs *findingList, n *nodeSpec, cols map[string]include.Column) (include.Inputs, bool) {
+func compileInputs(fs *findingList, n *nodeSpec, cols map[string]include.Column, sortCols map[string]string) (include.Inputs, bool) {
 	out := include.DefaultInputs()
 	if !n.inputsSet {
 		return out, false
@@ -63,11 +64,9 @@ func compileInputs(fs *findingList, n *nodeSpec, cols map[string]include.Column)
 	in := n.inputs
 
 	if in.Sort.Enabled {
-		keys := map[string]string{}
-		for name, c := range cols {
-			if c.Sortable {
-				keys[name] = c.Col
-			}
+		keys := maps.Clone(sortCols)
+		if keys == nil {
+			keys = map[string]string{}
 		}
 		if len(keys) == 0 {
 			fs.add(n.name, "", `Inputs.Sort enabled but no wire field carries col:"…,sort"`)

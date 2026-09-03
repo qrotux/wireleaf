@@ -28,13 +28,13 @@ import (
 // filter. (The v0 opaque string is gone: an application-owned filter travels
 // in the RootFetcher closure, not in QueryArgs.)
 type QueryArgs struct {
-	Where ResolvedFilter
 	Sort  string
-	Page  int
 	Limit int
+	Page  int
 	// Cursor is the OPAQUE continuation token in cursor mode ("" = first
 	// page); the fetcher that produced it decodes it. Zero in offset mode.
 	Cursor string
+	Where  ResolvedFilter
 }
 
 // RootFetcher is the endpoint's root-fetch closure. It owns the SQL (including

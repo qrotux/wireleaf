@@ -23,3 +23,19 @@ func TestInputsOf(t *testing.T) {
 		t.Fatalf("InputsOf(source) = %+v, %v", got, ok)
 	}
 }
+
+// TestInputsOfSettlesZeroPage pins that a hand-written InputSource may leave
+// Page fields zero and still get the compiled contract: zeros take the
+// package defaults, and a lone MaxLimit below the default caps it. Both the
+// resolver and apidoc.InputParams read through InputsOf, so neither sees a
+// zero limit.
+func TestInputsOfSettlesZeroPage(t *testing.T) {
+	got, _ := InputsOf(inputsStub{in: Inputs{}})
+	if got.Page != (PageInputs{Mode: PageModeOffset, DefaultLimit: DefaultPageLimit, MaxLimit: DefaultMaxPageLimit}) {
+		t.Fatalf("zero Page = %+v", got.Page)
+	}
+	got, _ = InputsOf(inputsStub{in: Inputs{Page: PageInputs{MaxLimit: 10}}})
+	if got.Page != (PageInputs{Mode: PageModeOffset, DefaultLimit: 10, MaxLimit: 10}) {
+		t.Fatalf("MaxLimit-only Page = %+v", got.Page)
+	}
+}

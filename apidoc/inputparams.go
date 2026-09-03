@@ -50,7 +50,10 @@ func InputParams(res include.Resource, limits include.Limits, syntax FilterSynta
 		Description: "Comma-separated relation paths to embed; every valid path is listed under x-include-paths.",
 		Schema:      IncludeParamSchema(IncludePaths(res, limits)),
 	}}
-	if in.Sort.Enabled {
+	// Sort enabled over no keys (a compile finding that was ignored) admits no
+	// value, so there is no parameter to document — an empty enum is not a
+	// schema.
+	if in.Sort.Enabled && len(in.Sort.Keys) > 0 {
 		keys := slices.Sorted(maps.Keys(in.Sort.Keys))
 		enum := make([]any, 0, 2*len(keys))
 		for _, k := range keys {

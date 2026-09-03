@@ -143,6 +143,12 @@ type Request struct {
 // increments it (single-threaded, no lock) as levels are serialized, so the
 // application can read the real cost of a request after hydration.
 //
+// The third is Registry: a Hydrator method given a Ctx whose Registry is nil
+// writes its own registry there, once, before any fetcher runs. That write is
+// unsynchronized, so a Ctx handed to several Hydrators — or to one from
+// several goroutines — must carry its Registry already; the fill-in is for
+// the one-Hydrator-per-request caller who builds &Ctx{Context: ctx}.
+//
 // Ctx contains a mutex: always pass *Ctx, never copy it by value.
 type Ctx struct {
 	// Context is the request Go context passed to fetchers (cancellation,

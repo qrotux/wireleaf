@@ -159,3 +159,20 @@ func TestInputsMaxLimitAloneCapsDefault(t *testing.T) {
 		t.Errorf("Page = %+v, want %d / 60", in.Page, include.DefaultPageLimit)
 	}
 }
+
+// TestInputsDeclaredZeroIsTheDefaultContract pins that declaring Inputs{} is
+// reported as declared and compiles to exactly the undeclared contract: offset
+// pagination, 20/100, no sort, no filter.
+func TestInputsDeclaredZeroIsTheDefaultContract(t *testing.T) {
+	g, err := inputsGraph(t, Inputs{})
+	if err != nil {
+		t.Fatalf("Inputs{}: %v", err)
+	}
+	in, ok := include.InputsOf(g.Resource("InBook"))
+	if !ok {
+		t.Fatal("Inputs{} must count as declared")
+	}
+	if in.Sort.Enabled || in.Filter.Enabled || in.Page != (include.PageInputs{Mode: include.PageModeOffset, DefaultLimit: include.DefaultPageLimit, MaxLimit: include.DefaultMaxPageLimit}) {
+		t.Fatalf("Inputs{} = %+v, want the undeclared contract", in)
+	}
+}

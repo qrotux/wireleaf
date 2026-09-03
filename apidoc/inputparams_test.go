@@ -131,3 +131,16 @@ func TestInputParamsBracketScalarTypes(t *testing.T) {
 		t.Errorf("active ops = %v", ff["active"])
 	}
 }
+
+// TestInputParamsSortWithoutKeys: sort enabled over no sortable column is a
+// compile finding, but a hand-written InputSource can still say it; the
+// document then carries no sort parameter rather than an empty enum.
+func TestInputParamsSortWithoutKeys(t *testing.T) {
+	res := withInputs(t, include.Inputs{Sort: include.SortInputs{Enabled: true}})
+	ps := InputParams(res, include.DefaultLimits, FilterJSON)
+	for _, p := range ps {
+		if p.Name == "sort" {
+			t.Fatalf("sort documented with no keys: %+v", p)
+		}
+	}
+}

@@ -1,6 +1,9 @@
 package include
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Code is a string error code for include-engine errors.
 type Code string
@@ -97,7 +100,36 @@ type Error struct {
 	Code   Code
 	Path   string
 	Status int
+	// Reason narrows Code where Path alone cannot tell the client which half
+	// of its spelling is wrong: a quantifier fault reports the same
+	// "<path>:<quant>" whether the word is not a quantifier, sits on a to-one
+	// hop, or was given twice. One of the Reason* constants; "" for every
+	// other fault, so equality on the three fields above is unchanged.
+	Reason string
 }
+
+// Reasons an INVALID_FILTER quantifier fault carries. The set is closed and
+// machine-readable, like Code: a client switches on it, never parses it.
+const (
+	// ReasonUnknownQuantifier: the word after ":" is not any/all/none.
+	ReasonUnknownQuantifier = "unknown-quantifier"
+	// ReasonQuantifierOnToOne: a quantifier on a hop that is not to-many.
+	ReasonQuantifierOnToOne = "quantifier-on-to-one"
+	// ReasonQuantifierRequired: a to-many hop with no quantifier at all.
+	ReasonQuantifierRequired = "quantifier-required"
+	// ReasonQuantifierOnUnknownPath: a field-suffix quantifier on a path the
+	// graph does not know, so there is no hop to move it to.
+	ReasonQuantifierOnUnknownPath = "quantifier-on-unknown-path"
+	// ReasonQuantifierWithoutManyHop: a field-suffix quantifier on a path
+	// that crosses no to-many hop.
+	ReasonQuantifierWithoutManyHop = "quantifier-without-many-hop"
+	// ReasonQuantifierAmbiguous: a field-suffix quantifier on a path that
+	// crosses several to-many hops; each hop needs its own suffix.
+	ReasonQuantifierAmbiguous = "quantifier-ambiguous"
+	// ReasonQuantifierTwice: a field-suffix quantifier on a path whose only
+	// to-many hop is already quantified on the segment.
+	ReasonQuantifierTwice = "quantifier-twice"
+)
 
 // NewError constructs an Error with the given code and path, defaulting Status
 // to 400 (Bad Request).
@@ -105,10 +137,25 @@ func NewError(code Code, path string) *Error {
 	return &Error{Code: code, Path: path, Status: 400}
 }
 
+// WithReason sets Reason and returns e, for use at the construction site.
+func (e *Error) WithReason(reason string) *Error {
+	e.Reason = reason
+	return e
+}
+
 // Error implements the error interface.
 func (e *Error) Error() string {
+	var b strings.Builder
+	b.WriteString(string(e.Code))
 	if e.Path != "" {
-		return fmt.Sprintf("%s: %s (status %d)", e.Code, e.Path, e.Status)
+		b.WriteString(": ")
+		b.WriteString(e.Path)
 	}
-	return fmt.Sprintf("%s (status %d)", e.Code, e.Status)
+	if e.Reason != "" {
+		b.WriteString(" [")
+		b.WriteString(e.Reason)
+		b.WriteString("]")
+	}
+	fmt.Fprintf(&b, " (status %d)", e.Status)
+	return b.String()
 }

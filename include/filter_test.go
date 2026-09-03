@@ -265,12 +265,13 @@ func TestResolveFilterErrors(t *testing.T) {
 	longKey := strings.Repeat("x", 40)
 	cutKey := strings.Repeat("x", 16) + "…"
 	cases := []struct {
-		name string
-		root Resource
-		f    Filter
-		opts Options
-		code Code
-		path string
+		name   string
+		root   Resource
+		f      Filter
+		opts   Options
+		code   Code
+		path   string
+		reason string // "" for every fault but a quantifier's
 	}{
 		{name: "unknown field", root: book, f: FilterCond{Field: "nope", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "nope"},
 		{name: "non-filterable column", root: book, f: FilterCond{Path: steps("author"), Field: "email", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "author.email"},
@@ -280,16 +281,16 @@ func TestResolveFilterErrors(t *testing.T) {
 		{name: "empty edge key", root: book, f: FilterCond{Path: steps(""), Field: "name", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: ""},
 		{name: "overlong unknown field", root: book, f: FilterCond{Field: strings.Repeat("x", 40), Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: strings.Repeat("x", 16) + "\u2026"},
 		{name: "overlong unknown operator", root: book, f: FilterCond{Field: "title", Op: FilterOp(strings.Repeat("x", 40))}, opts: DefaultOptions, code: INVALID_FILTER, path: "title:" + strings.Repeat("x", 16) + "\u2026"},
-		{name: "multibyte quantifier", root: book, f: FilterCond{Path: []FilterStep{{Key: "reviews", Quant: Quant(strings.Repeat("\u2192", 20))}}, Field: "rating", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "reviews:" + strings.Repeat("\u2192", 5) + "\u2026"},
+		{name: "multibyte quantifier", root: book, f: FilterCond{Path: []FilterStep{{Key: "reviews", Quant: Quant(strings.Repeat("\u2192", 20))}}, Field: "rating", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "reviews:" + strings.Repeat("\u2192", 5) + "\u2026", reason: ReasonUnknownQuantifier},
 		{name: "filterable edge with a nil target result", root: nilTargetRoot(), f: FilterCond{Path: steps("ghost"), Field: "name", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "ghost"},
 		{name: "non-filterable edge", root: book, f: FilterCond{Path: steps("editor"), Field: "name", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "editor"},
 		{name: "non-filterable edge deeper", root: book, f: FilterCond{Path: []FilterStep{{Key: "author"}, {Key: "books", Quant: QuantAny}}, Field: "title", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "author.books"},
-		{name: "to-many hop without a quantifier", root: book, f: FilterCond{Path: steps("reviews"), Field: "rating", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "reviews"},
-		{name: "to-many hop without a quantifier, deeper", root: book, f: FilterCond{Path: steps("author", "works"), Field: "title", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "author.works"},
-		{name: "quantifier on a to-one hop", root: book, f: FilterCond{Path: []FilterStep{{Key: "author", Quant: QuantAny}}, Field: "name", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "author:any"},
-		{name: "unknown quantifier on a to-one hop", root: book, f: FilterCond{Path: []FilterStep{{Key: "author", Quant: Quant("bogus")}}, Field: "name", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "author:bogus"},
-		{name: "unknown quantifier", root: book, f: FilterCond{Path: []FilterStep{{Key: "reviews", Quant: Quant("some")}}, Field: "rating", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "reviews:some"},
-		{name: "overlong quantifier", root: book, f: FilterCond{Path: []FilterStep{{Key: "reviews", Quant: Quant(strings.Repeat("x", 40))}}, Field: "rating", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "reviews:" + strings.Repeat("x", 16) + "\u2026"},
+		{name: "to-many hop without a quantifier", root: book, f: FilterCond{Path: steps("reviews"), Field: "rating", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "reviews", reason: ReasonQuantifierRequired},
+		{name: "to-many hop without a quantifier, deeper", root: book, f: FilterCond{Path: steps("author", "works"), Field: "title", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "author.works", reason: ReasonQuantifierRequired},
+		{name: "quantifier on a to-one hop", root: book, f: FilterCond{Path: []FilterStep{{Key: "author", Quant: QuantAny}}, Field: "name", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "author:any", reason: ReasonQuantifierOnToOne},
+		{name: "unknown quantifier on a to-one hop", root: book, f: FilterCond{Path: []FilterStep{{Key: "author", Quant: Quant("bogus")}}, Field: "name", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "author:bogus", reason: ReasonUnknownQuantifier},
+		{name: "unknown quantifier", root: book, f: FilterCond{Path: []FilterStep{{Key: "reviews", Quant: Quant("some")}}, Field: "rating", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "reviews:some", reason: ReasonUnknownQuantifier},
+		{name: "overlong quantifier", root: book, f: FilterCond{Path: []FilterStep{{Key: "reviews", Quant: Quant(strings.Repeat("x", 40))}}, Field: "rating", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "reviews:" + strings.Repeat("x", 16) + "\u2026", reason: ReasonUnknownQuantifier},
 		{name: "column without a type", root: &fRes{name: "Typeless", cols: map[string]Column{"x": {Col: "x", Filterable: true}}}, f: FilterCond{Field: "x", Op: OpEq}, opts: DefaultOptions, code: INVALID_FILTER, path: "x:eq"},
 		// A hand-built source may mark a column of any type filterable;
 		// graph.Compile refuses this one at compile time, ResolveFilter at
@@ -340,8 +341,8 @@ func TestResolveFilterErrors(t *testing.T) {
 			if !errors.As(err, &e) {
 				t.Fatalf("err = %v, want *Error", err)
 			}
-			if e.Code != tc.code || e.Path != tc.path || e.Status != 400 {
-				t.Errorf("err = %+v, want Code %s Path %q Status 400", e, tc.code, tc.path)
+			if e.Code != tc.code || e.Path != tc.path || e.Status != 400 || e.Reason != tc.reason {
+				t.Errorf("err = %+v, want Code %s Path %q Status 400 Reason %q", e, tc.code, tc.path, tc.reason)
 			}
 		})
 	}

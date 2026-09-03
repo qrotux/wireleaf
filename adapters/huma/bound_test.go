@@ -139,3 +139,15 @@ type BookCursorPage struct {
 	Data       []Node[BookWireT]     `json:"data"`
 	Pagination CursorPaginationTotal `json:"pagination"`
 }
+
+func TestBoundHydrate(t *testing.T) {
+	a := New(inputsGraph(t), include.DefaultOptions, "t", "1")
+	books := Bind[BookWireT](a, "Book")
+	n, err := books.Hydrate(context.Background(), fixtureRow{ID: "new", Title: "Fresh"}, "")
+	if err != nil || !strings.Contains(string(mustJSON(t, n)), `"Fresh"`) {
+		t.Fatalf("Hydrate: %v %v", n, err)
+	}
+	if _, err := books.Hydrate(context.Background(), fixtureRow{ID: "new"}, "ghost"); err == nil || err.(humav2.StatusError).GetStatus() != 400 {
+		t.Fatalf("bad include: %v", err)
+	}
+}

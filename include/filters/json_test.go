@@ -2,6 +2,7 @@ package filters_test
 
 import (
 	"errors"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -49,6 +50,8 @@ func TestParseJSONErrors(t *testing.T) {
 		"two keys":                      `{"name":{"eq":"x"},"age":{"gt":1}}`,
 		"no keys":                       `{}`,
 		"and not array":                 `{"and":{}}`,
+		"and null":                      `{"and":null}`,
+		"and empty":                     `{"or":[]}`,
 		"nested member bad":             `{"and":[{"name":{"like":"x"}}]}`,
 		"cond value not object":         `{"name":"x"}`,
 		"two ops":                       `{"name":{"eq":"x","ne":"y"}}`,
@@ -77,6 +80,8 @@ func TestParseJSONErrorPaths(t *testing.T) {
 		"no keys":                       {`{}`, ""},
 		"two keys":                      {`{"age":{"gt":1},"name":{"eq":"x"}}`, "age (+1 keys)"},
 		"and not array":                 {`{"and":{}}`, "and"},
+		"and null":                      {`{"and":null}`, "and"},
+		"and empty":                     {`{"or":[]}`, "or"},
 		"cond value not object":         {`{"name":"x"}`, "name"},
 		"two ops":                       {`{"name":{"eq":"x","ne":"y"}}`, "name"},
 		"unknown op":                    {`{"name":{"like":"x"}}`, "name:like"},
@@ -130,5 +135,49 @@ func TestParseJSONNilRoot(t *testing.T) {
 	var ie *include.Error
 	if !errors.As(err, &ie) || ie.Code != include.INVALID_FILTER || ie.Path != "" || ie.Status != 400 {
 		t.Fatalf("err = %v, want *Error INVALID_FILTER with empty path", err)
+	}
+}
+
+// TestParseNotFilterableColumnPassesThrough pins the parser/resolver split on
+// a column the graph BINDS but does not open to filtering: both parsers accept
+// it (they judge syntax), ResolveFilter is the one that refuses it, naming
+// the field.
+func TestParseNotFilterableColumnPassesThrough(t *testing.T) {
+	root := filterRoot(t)
+	fromJSON, err := filters.ParseJSON(root, []byte(`{"email":{"eq":"x"}}`))
+	if err != nil {
+		t.Fatalf("ParseJSON: %v", err)
+	}
+	fromQuery, err := filters.ParseQuery(root, url.Values{"where[email][eq]": {"x"}})
+	if err != nil {
+		t.Fatalf("ParseQuery: %v", err)
+	}
+	for name, f := range map[string]include.Filter{"json": fromJSON, "query": fromQuery} {
+		_, err := include.ResolveFilter(root, f, include.DefaultOptions)
+		var ie *include.Error
+		if !errors.As(err, &ie) || ie.Code != include.INVALID_FILTER || ie.Path != "email" {
+			t.Errorf("%s: ResolveFilter err = %v, want INVALID_FILTER at email", name, err)
+		}
+	}
+}
+
+// TestParseJSONQuantifierReasons pins the Reason each field-suffix fault
+// carries: the Path is the same "<path>:<quant>" for all four, and Reason is
+// what tells the client which half of the spelling to fix.
+func TestParseJSONQuantifierReasons(t *testing.T) {
+	root := filterRoot(t)
+	for name, tc := range map[string]struct{ in, path, reason string }{
+		"unknown path":       {`{"ghost.title~":{"eq":1}}`, "ghost.title~:none", include.ReasonQuantifierOnUnknownPath},
+		"no to-many hop":     {`{"self.name~":{"eq":1}}`, "self.name~:none", include.ReasonQuantifierWithoutManyHop},
+		"several to-many":    {`{"works.reviews.text*":{"eq":1}}`, "works.reviews.te…:all", include.ReasonQuantifierAmbiguous},
+		"already quantified": {`{"works*.title~":{"eq":1}}`, "works*.title~:none", include.ReasonQuantifierTwice},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := filters.ParseJSON(root, []byte(tc.in))
+			var ie *include.Error
+			if !errors.As(err, &ie) || ie.Path != tc.path || ie.Reason != tc.reason {
+				t.Fatalf("err = %+v, want Path %q Reason %q", ie, tc.path, tc.reason)
+			}
+		})
 	}
 }

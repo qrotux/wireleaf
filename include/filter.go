@@ -300,11 +300,11 @@ func (r *filterResolver) cond(c FilterCond) (ResolvedFilter, error) {
 		// hop" would send the client to fix the wrong half of the spelling.
 		switch {
 		case step.Quant != "" && !quantKnown(step.Quant):
-			return nil, NewError(INVALID_FILTER, strings.Join(keys[:i+1], ".")+":"+clientEcho(string(step.Quant)))
+			return nil, NewError(INVALID_FILTER, strings.Join(keys[:i+1], ".")+":"+clientEcho(string(step.Quant))).WithReason(ReasonUnknownQuantifier)
 		case !e.Many && step.Quant != "":
-			return nil, NewError(INVALID_FILTER, strings.Join(keys[:i+1], ".")+":"+clientEcho(string(step.Quant)))
+			return nil, NewError(INVALID_FILTER, strings.Join(keys[:i+1], ".")+":"+clientEcho(string(step.Quant))).WithReason(ReasonQuantifierOnToOne)
 		case e.Many && step.Quant == "":
-			return nil, NewError(INVALID_FILTER, strings.Join(keys[:i+1], "."))
+			return nil, NewError(INVALID_FILTER, strings.Join(keys[:i+1], ".")).WithReason(ReasonQuantifierRequired)
 		}
 		if e.Many {
 			many++

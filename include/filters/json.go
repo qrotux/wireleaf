@@ -53,7 +53,9 @@ func parseJSONNode(root include.Resource, raw json.RawMessage) (include.Filter, 
 	}
 	if key == "and" || key == "or" {
 		var items []json.RawMessage
-		if err := json.Unmarshal(obj[key], &items); err != nil {
+		// A null or empty group is refused here, where the key is known,
+		// rather than by ResolveFilter with a path that does not name it.
+		if err := json.Unmarshal(obj[key], &items); err != nil || len(items) == 0 {
 			// The group key is a known spelling: it goes back whole.
 			return nil, include.NewError(include.INVALID_FILTER, key)
 		}
@@ -87,10 +89,10 @@ func parseJSONNode(root include.Resource, raw json.RawMessage) (include.Filter, 
 	// The value passes through exactly as encoding/json decoded it — float64,
 	// string, bool, []any, nil. No coercion: an adapter binds it by
 	// Column.Type, and the engine judges the OPERATOR, never the value.
+	// body is the member of an object that already decoded, so its value is
+	// valid JSON and decoding it into any cannot fail.
 	var value any
-	if err := json.Unmarshal(body[opKey], &value); err != nil {
-		return nil, include.NewError(include.INVALID_FILTER, clip.Echo(key)+":"+opKey)
-	}
+	_ = json.Unmarshal(body[opKey], &value)
 	steps, field, err := filterPath(root, key)
 	if err != nil {
 		return nil, err

@@ -39,7 +39,11 @@ func Bind[W any](a *API, node string) *Bound[W] {
 	if !ok {
 		panic(fmt.Sprintf("adapters/huma: Bind: node %q has no wire type", node))
 	}
-	if got, want := apidoc.DerefType(reflect.TypeOf(ws.WireSample())), reflect.TypeFor[W](); got != want {
+	sample := ws.WireSample()
+	if sample == nil {
+		panic(fmt.Sprintf("adapters/huma: Bind: node %q returns a nil WireSample", node))
+	}
+	if got, want := apidoc.DerefType(reflect.TypeOf(sample)), reflect.TypeFor[W](); got != want {
 		panic(fmt.Sprintf("adapters/huma: Bind: wire type mismatch for node %q: graph declares %v, Bind asked for %v", node, got, want))
 	}
 	// IDEMPOTENT PER (node, W), not per W: two Binds of the same pair register
@@ -53,8 +57,10 @@ func Bind[W any](a *API, node string) *Bound[W] {
 		a.bindings[key] = true
 	}
 	// Keyed by wrapper type alone: this is checkBound's lookup, and an output
-	// type carries the wrapper without naming a node.
+	// type carries the wrapper without naming a node. The core wrapper counts
+	// too: RegisterNode registered it, and an envelope may carry it directly.
 	a.bound[wrapper] = true
+	a.bound[reflect.TypeFor[apidoc.Node[W]]()] = true
 	return &Bound[W]{api: a, res: res, hyd: include.Bind(res, a.g, a.opts)}
 }
 

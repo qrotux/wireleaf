@@ -279,7 +279,7 @@ func component(t *testing.T, out map[string]Schema, name string) map[string]any 
 	t.Helper()
 	s, ok := out[name]
 	if !ok {
-		t.Fatalf("component %q missing (have %v)", name, keysOf(out))
+		t.Fatalf("component %q missing (have %v)", name, slices.Sorted(maps.Keys(out)))
 	}
 	return s.Map()
 }
@@ -328,8 +328,6 @@ func contains(hay []string, needle string) bool {
 	}
 	return false
 }
-
-func keysOf[V any](m map[string]V) []string { return slices.Sorted(maps.Keys(m)) }
 
 // envelopeOf is the enveloped-to-many shape as a generic fragment, including
 // the OPTIONAL nextCursor.

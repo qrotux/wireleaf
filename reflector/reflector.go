@@ -153,7 +153,13 @@ func (e *engine) collect(types []reflect.Type) error {
 				return nil
 			}
 			if d := params.PropertySchema.Description; d != nil && *d != doc {
-				return fmt.Errorf("reflector: %s: doc and description tags disagree (%q vs %q)", strings.Join(append(append([]string{}, params.Path...), params.Name), "."), doc, *d)
+				// params.Path starts at the "#" document root, which names
+				// nothing a Go author recognises.
+				path := params.Path
+				if len(path) > 0 && path[0] == "#" {
+					path = path[1:]
+				}
+				return fmt.Errorf("reflector: %s: doc and description tags disagree (%q vs %q)", strings.Join(append(append([]string{}, path...), params.Name), "."), doc, *d)
 			}
 			params.PropertySchema.Description = &doc
 			return nil

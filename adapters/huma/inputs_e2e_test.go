@@ -10,6 +10,7 @@ package huma
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -61,6 +62,8 @@ func serve(t *testing.T, mode include.PageMode, syntax apidoc.FilterSyntax) (hum
 	a.Attach(h)
 	books := Bind[BookWireT](a, "Book")
 
+	// Every list request overwrites the one snapshot: a test reads the
+	// arguments of the LAST list it made, so it asserts them before the next.
 	seen := &include.QueryArgs{}
 	fetch := include.ListFetcher(func(_ *include.Ctx, q include.QueryArgs) (include.ListPage, error) {
 		*seen = q
@@ -103,35 +106,102 @@ func serve(t *testing.T, mode include.PageMode, syntax apidoc.FilterSyntax) (hum
 	return h, seen
 }
 
+// docParam is the slice of a documented parameter the e2e tests assert on.
+type docParam struct {
+	Name    string         `json:"name"`
+	In      string         `json:"in"`
+	Style   string         `json:"style"`
+	Explode *bool          `json:"explode"`
+	Schema  map[string]any `json:"schema"`
+}
+
+// queryParams returns the query parameters of GET path as the served document
+// lists them, in order — so a test asserts on the parameter, not on a
+// substring that could match anywhere in the document.
+func queryParams(t *testing.T, h humatest.TestAPI, path string) []docParam {
+	t.Helper()
+	var doc struct {
+		Paths map[string]struct {
+			Get struct {
+				Parameters []docParam `json:"parameters"`
+				Responses  map[string]struct {
+					Description string `json:"description"`
+				} `json:"responses"`
+			} `json:"get"`
+		} `json:"paths"`
+	}
+	body := h.Get("/openapi.json").Body.Bytes()
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("openapi.json: %v", err)
+	}
+	op, ok := doc.Paths[path]
+	if !ok {
+		t.Fatalf("document has no %s: %s", path, body)
+	}
+	var out []docParam
+	for _, p := range op.Get.Parameters {
+		if p.In == "query" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func paramNames(ps []docParam) []string {
+	names := make([]string, 0, len(ps))
+	for _, p := range ps {
+		names = append(names, p.Name)
+	}
+	return names
+}
+
+func paramNamed(t *testing.T, ps []docParam, name string) docParam {
+	t.Helper()
+	for _, p := range ps {
+		if p.Name == name {
+			return p
+		}
+	}
+	t.Fatalf("no %s parameter in %v", name, paramNames(ps))
+	return docParam{}
+}
+
 func TestInputsEndToEndOffsetJSON(t *testing.T) {
 	h, seen := serve(t, include.PageModeOffset, apidoc.FilterJSON)
-	doc := h.Get("/openapi.json").Body.String()
-	for _, want := range []string{`"x-include-paths"`, `"-title"`, `"maximum":50`, `"x-filter-syntax":"json"`, `"x-filter-fields"`, "INVALID_SORT", `"name":"page"`} {
-		if !strings.Contains(doc, want) {
-			t.Errorf("document lacks %s", want)
-		}
+	ps := queryParams(t, h, "/books")
+	if got, want := strings.Join(paramNames(ps), ","), "include,sort,page,limit,where"; got != want {
+		t.Errorf("parameters = %s, want %s", got, want)
 	}
-	if strings.Contains(doc, `"name":"cursor"`) {
-		t.Error("offset mode must not document cursor")
+	if s := paramNamed(t, ps, "include").Schema; s["x-include-paths"] == nil {
+		t.Errorf("include schema lacks x-include-paths: %v", s)
 	}
-	for path, code := range map[string]int{
-		"/books?sort=ghost": 400,
-		"/books?limit=999":  400,
-		"/books?where=%7B%22ghost%22%3A%7B%22eq%22%3A1%7D%7D": 400,
-		"/books?limit=abc":                  422,
-		"/books?sort=-title&page=2&limit=1": 200,
+	if s := paramNamed(t, ps, "sort").Schema; !strings.Contains(string(mustJSON(t, s["enum"])), `"-title"`) {
+		t.Errorf("sort enum = %v, want the node's sortable columns both ways", s["enum"])
+	}
+	if s := paramNamed(t, ps, "limit").Schema; s["maximum"] != float64(50) {
+		t.Errorf("limit maximum = %v, want the node's MaxLimit 50", s["maximum"])
+	}
+	if s := paramNamed(t, ps, "where").Schema; s["x-filter-syntax"] != "json" || s["x-filter-fields"] == nil {
+		t.Errorf("where schema = %v, want json syntax with x-filter-fields", s)
+	}
+	if doc := h.Get("/openapi.json").Body.String(); !strings.Contains(doc, "INVALID_SORT") {
+		t.Error("document lacks the INVALID_SORT 400")
+	}
+	// One request per path: the status and, for a 400, the code in the body.
+	for _, tc := range []struct {
+		path string
+		code int
+		body string
+	}{
+		{"/books?sort=ghost", 400, "INVALID_SORT"},
+		{"/books?limit=999", 400, "INVALID_PAGINATION"},
+		{"/books?where=%7B%22ghost%22%3A%7B%22eq%22%3A1%7D%7D", 400, "INVALID_FILTER"},
+		{"/books?limit=abc", 422, ""},
+		{"/books?sort=-title&page=2&limit=1", 200, ""},
 	} {
-		if resp := h.Get(path); resp.Code != code {
-			t.Errorf("%s = %d, want %d: %s", path, resp.Code, code, resp.Body.String())
-		}
-	}
-	for _, tc := range []struct{ path, code string }{
-		{"/books?sort=ghost", "INVALID_SORT"},
-		{"/books?limit=999", "INVALID_PAGINATION"},
-		{"/books?where=%7B%22ghost%22%3A%7B%22eq%22%3A1%7D%7D", "INVALID_FILTER"},
-	} {
-		if body := h.Get(tc.path).Body.String(); !strings.Contains(body, tc.code) {
-			t.Errorf("%s body lacks %s: %s", tc.path, tc.code, body)
+		resp := h.Get(tc.path)
+		if resp.Code != tc.code || !strings.Contains(resp.Body.String(), tc.body) {
+			t.Errorf("%s = %d %s, want %d containing %q", tc.path, resp.Code, resp.Body.String(), tc.code, tc.body)
 		}
 	}
 	if seen.Sort != "-title" || seen.Page != 2 || seen.Limit != 1 {
@@ -145,14 +215,16 @@ func TestInputsEndToEndOffsetJSON(t *testing.T) {
 
 func TestInputsEndToEndCursorBracket(t *testing.T) {
 	h, seen := serve(t, include.PageModeCursor, apidoc.FilterBracket)
-	doc := h.Get("/openapi.json").Body.String()
-	for _, want := range []string{`"name":"cursor"`, `"style":"deepObject"`, `"explode":true`, `"x-filter-syntax":"bracket"`, `"x-filter-fields"`, "INVALID_PAGINATION"} {
-		if !strings.Contains(doc, want) {
-			t.Errorf("document lacks %s", want)
-		}
+	ps := queryParams(t, h, "/books")
+	if got, want := strings.Join(paramNames(ps), ","), "include,sort,cursor,limit,where"; got != want {
+		t.Errorf("parameters = %s, want %s", got, want)
 	}
-	if strings.Contains(doc, `"name":"page"`) {
-		t.Error("cursor mode must not document page")
+	where := paramNamed(t, ps, "where")
+	if where.Style != "deepObject" || where.Explode == nil || !*where.Explode || where.Schema["x-filter-syntax"] != "bracket" || where.Schema["x-filter-fields"] == nil {
+		t.Errorf("where = %+v, want an exploded deepObject in bracket syntax", where)
+	}
+	if doc := h.Get("/openapi.json").Body.String(); !strings.Contains(doc, "INVALID_PAGINATION") {
+		t.Error("document lacks the INVALID_PAGINATION 400")
 	}
 	resp := h.Get("/books?cursor=c1&where[title][eq]=x")
 	if resp.Code != 200 || seen.Cursor != "c1" || seen.Where == nil || !strings.Contains(resp.Body.String(), `"nextCursor":"n2"`) {
@@ -226,16 +298,8 @@ func TestInputsEndToEndNoSortNoFilter(t *testing.T) {
 			return out, nil
 		}, plains.Inputs())
 
-	doc := h.Get("/openapi.json").Body.String()
-	for _, unwanted := range []string{`"name":"sort"`, `"name":"where"`, `"name":"cursor"`} {
-		if strings.Contains(doc, unwanted) {
-			t.Errorf("a node without sort/filter must not document %s", unwanted)
-		}
-	}
-	for _, want := range []string{`"name":"include"`, `"name":"page"`, `"name":"limit"`} {
-		if !strings.Contains(doc, want) {
-			t.Errorf("document lacks %s", want)
-		}
+	if got, want := strings.Join(paramNames(queryParams(t, h, "/plain")), ","), "include,page,limit"; got != want {
+		t.Errorf("parameters = %s, want %s (sort and where pruned)", got, want)
 	}
 	// Pruning is documentation only: the resolver still sees and rejects the
 	// values ListQuery carries.
@@ -287,19 +351,10 @@ func TestInputsEndToEndGroupPrefix(t *testing.T) {
 			return out, nil
 		}, plains.Inputs())
 
-	doc := h.Get("/openapi.json").Body.String()
-	if !strings.Contains(doc, `"/v1/books"`) {
-		t.Fatalf("the group prefix did not reach the document: %s", doc)
-	}
-	for _, unwanted := range []string{`"name":"sort"`, `"name":"where"`, `"name":"cursor"`} {
-		if strings.Contains(doc, unwanted) {
-			t.Errorf("a prefixed no-sort/no-filter operation must not document %s", unwanted)
-		}
-	}
-	for _, want := range []string{`"name":"include"`, `"name":"page"`, `"name":"limit"`} {
-		if !strings.Contains(doc, want) {
-			t.Errorf("document lacks %s", want)
-		}
+	// queryParams fails on a missing path, so the prefix reaching the
+	// document is asserted by the lookup itself.
+	if got, want := strings.Join(paramNames(queryParams(t, h, "/v1/books")), ","), "include,page,limit"; got != want {
+		t.Errorf("parameters = %s, want %s (sort and where pruned under the prefix)", got, want)
 	}
 	if resp := h.Get("/v1/books?limit=1"); resp.Code != 200 {
 		t.Errorf("prefixed list = %d %s", resp.Code, resp.Body.String())

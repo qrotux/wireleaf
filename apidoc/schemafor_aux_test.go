@@ -13,6 +13,8 @@ package apidoc
 // the names EmitComponents emits (plus the node names it also emits).
 
 import (
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/qrotux/wireleaf/include"
@@ -83,7 +85,7 @@ func TestSchemaForRefsAreAllEmittedComponents(t *testing.T) {
 			for name := range schemaForRefs(s.Map()) {
 				if _, ok := comps[name]; !ok {
 					t.Errorf("SchemaFor emits a $ref to %q, which EmitComponents does NOT emit (it has %v) — a DANGLING reference",
-						name, keysOf(comps))
+						name, slices.Sorted(maps.Keys(comps)))
 				}
 			}
 		})
@@ -129,7 +131,7 @@ func TestSchemaForSoleRefSurvivorIsResolvable(t *testing.T) {
 	// EmitComponents keeps the survivor and references it from the static
 	// component.
 	if _, ok := comps["metaInner"]; !ok {
-		t.Fatalf("the sole-ref survivor must be an emitted component; got %v", keysOf(comps))
+		t.Fatalf("the sole-ref survivor must be an emitted component; got %v", slices.Sorted(maps.Keys(comps)))
 	}
 	static := component(t, comps, "Meta")
 	if got := prop(t, static, "described")["$ref"]; got != RefPrefix+"metaInner" {

@@ -95,6 +95,12 @@ func New(g *graph.Graph, opts include.Options, title, version string, o ...Optio
 		panic(fmt.Sprintf("adapters/huma: emitting graph components: %v", err))
 	}
 	for _, name := range slices.Sorted(maps.Keys(frags)) {
+		// Checked here, not left to registerLibraryComponents: that installer
+		// would refuse the name too, but as a schema conflict on ITS component,
+		// which points away from the node that caused it.
+		if slices.Contains(libraryComponents, name) {
+			panic(fmt.Sprintf("adapters/huma: node %q collides with the library component of the same name", name))
+		}
 		c.Add(name, frags[name])
 	}
 	cfgOpts := append([]ConfigOpt{WithRegistry(c)}, ao.cfg...)
@@ -210,8 +216,11 @@ func (a *API) Inputs(res include.Resource) OpOpt {
 				panic(fmt.Sprintf("adapters/huma: building the %s parameter schema: %v", p.Name, err))
 			}
 			hp := &humav2.Param{Name: p.Name, In: "query", Description: p.Description, Schema: schema, Style: p.Style}
-			if p.Explode {
-				explode := true
+			if p.Style != "" {
+				// A style carries its own explode default, so a styled
+				// parameter states the flag either way; an unstyled one
+				// keeps huma's form/true default.
+				explode := p.Explode
 				hp.Explode = &explode
 			}
 			op.Parameters = append(op.Parameters, hp)
@@ -252,10 +261,19 @@ func (a *API) Inputs(res include.Resource) OpOpt {
 	}
 }
 
-// listQueryParams are the query parameter names huma derives from ListQuery.
-// Inputs drops the ones apidoc.InputParams did not document. Keep in sync with
-// ListQuery's query tags (bound.go).
-var listQueryParams = []string{"include", "sort", "page", "cursor", "limit", "where"}
+// listQueryParams are the query parameter names huma derives from ListQuery,
+// read off its tags so a field added there is pruned without a second edit.
+var listQueryParams = queryTagsOf(reflect.TypeFor[ListQuery]())
+
+func queryTagsOf(t reflect.Type) []string {
+	var names []string
+	for i := 0; i < t.NumField(); i++ {
+		if name := t.Field(i).Tag.Get("query"); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
 
 // metaDropQuery is the operation-metadata key Inputs uses to tell the
 // document hook which huma-derived query parameters the resource does not
@@ -288,6 +306,9 @@ func dropQueryParams(op *humav2.Operation) {
 
 // Register registers op with its decorators on the attached huma API.
 func Register[I, O any](a *API, op humav2.Operation, handler func(context.Context, *I) (*O, error), opts ...OpOpt) {
+	if a == nil {
+		panic("adapters/huma: Register on a nil *API")
+	}
 	if a.huma == nil {
 		panic("adapters/huma: Register before Attach")
 	}
@@ -306,10 +327,15 @@ func (a *API) checkBound(t reflect.Type) {
 		}
 		seen[t] = true
 		switch t.Kind() {
-		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
+		case reflect.Pointer, reflect.Slice, reflect.Array:
+			walk(t.Elem())
+		case reflect.Map:
+			walk(t.Key())
 			walk(t.Elem())
 		case reflect.Struct:
-			if t.PkgPath() == reflect.TypeFor[API]().PkgPath() && strings.HasPrefix(t.Name(), "Node[") {
+			// Both wrappers Bind registers: this package's Node[W] and the
+			// core apidoc.Node[W] it embeds.
+			if isNodeWrapper(t) {
 				if !a.bound[t] {
 					panic(fmt.Sprintf("adapters/huma: output carries %s but no Bind registered it (call Bind before Register)", t))
 				}
@@ -321,4 +347,9 @@ func (a *API) checkBound(t reflect.Type) {
 		}
 	}
 	walk(t)
+}
+
+func isNodeWrapper(t reflect.Type) bool {
+	pkg := t.PkgPath()
+	return (pkg == reflect.TypeFor[API]().PkgPath() || pkg == reflect.TypeFor[apidoc.Node[struct{}]]().PkgPath()) && strings.HasPrefix(t.Name(), "Node[")
 }

@@ -53,7 +53,7 @@ type authorRow struct {
 	Name string
 }
 
-// Wire types carry TWO tag sets with different jobs.
+// BookWire is a wire type; wire types carry TWO tag sets with different jobs.
 //
 //   - `doc`, `example`, `minLength`, `minimum`, … are the reflector's
 //     documentation tags: they land in the component's JSON Schema verbatim.
@@ -100,12 +100,16 @@ var authors = map[string]authorRow{
 }
 
 func insertBook(body CreateBookBody) bookRow {
-	row := bookRow{
-		ID:       "b" + strconv.Itoa(len(books)+1),
-		Title:    body.Title,
-		Year:     body.Year,
-		AuthorID: body.AuthorID,
+	// The first free "b<n>": counting rows would reuse an id once any row
+	// were removed.
+	id := ""
+	for n := len(books) + 1; ; n++ {
+		if _, taken := books["b"+strconv.Itoa(n)]; !taken {
+			id = "b" + strconv.Itoa(n)
+			break
+		}
 	}
+	row := bookRow{ID: id, Title: body.Title, Year: body.Year, AuthorID: body.AuthorID}
 	books[row.ID] = row
 	return row
 }
@@ -230,12 +234,13 @@ func matches(f include.ResolvedFilter, cols map[string]any) bool {
 		}
 		return true
 	case include.ResolvedOr:
+		// The resolver refuses an empty group, so no member holding is false.
 		for _, m := range t {
 			if matches(m, cols) {
 				return true
 			}
 		}
-		return len(t) == 0
+		return false
 	case include.ResolvedCond:
 		return condHolds(t, cols)
 	default:
@@ -249,9 +254,12 @@ func condHolds(c include.ResolvedCond, cols map[string]any) bool {
 	if len(c.Hops) > 0 {
 		return true
 	}
+	// The resolver already checked the client's name against the node's
+	// columns, so a column this store cannot answer is a bug in bookCols /
+	// authorCols, not in the request.
 	got, ok := cols[c.Column.Col]
 	if !ok {
-		return true
+		panic(fmt.Sprintf("example store has no column %q", c.Column.Col))
 	}
 	switch c.Op {
 	case include.OpIn, include.OpNin:
@@ -267,7 +275,8 @@ func condHolds(c include.ResolvedCond, cols map[string]any) bool {
 	}
 	n, ok := compare(got, c.Value)
 	if !ok {
-		return false
+		// Incomparable values are unequal: ne holds, everything else fails.
+		return c.Op == include.OpNe
 	}
 	switch c.Op {
 	case include.OpEq:
@@ -306,6 +315,14 @@ func compare(a, b any) (int, bool) {
 	bs, bok := b.(string)
 	if aok && bok {
 		return strings.Compare(as, bs), true
+	}
+	ab, aok := a.(bool)
+	bb, bok := b.(bool)
+	if aok && bok {
+		if ab == bb {
+			return 0, true
+		}
+		return 1, true // unequal is all a bool comparison can say
 	}
 	return 0, false
 }
@@ -432,9 +449,10 @@ type createBookInput struct {
 
 type listAuthorsInput struct{ wfhuma.ListQuery }
 
-// The envelope convention: a struct whose first field is `data` typed as a
-// Node wrapper (or a slice of one) documents as {data: $ref Book}, not as its
-// Go field shape. Node[W] carries the engine's hydrated bytes verbatim.
+// BookEnvelope follows the envelope convention: a struct whose first field is
+// `data` typed as a Node wrapper (or a slice of one) documents as
+// {data: $ref Book}, not as its Go field shape. Node[W] carries the engine's
+// hydrated bytes verbatim.
 //
 // wfhuma.Page[W] is NOT a huma body — copy its Data and the pagination block
 // of the resource's mode into the application's own envelope.

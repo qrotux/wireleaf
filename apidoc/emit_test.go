@@ -76,7 +76,7 @@ func TestEmitComponentsStitchesEdgeKinds(t *testing.T) {
 		t.Errorf("Author.books fragment = %v, want %v", got, want)
 	}
 	if _, ok := out["Review"]; !ok {
-		t.Errorf("Review component missing; emitted %v", keysOf(out))
+		t.Errorf("Review component missing; emitted %v", slices.Sorted(maps.Keys(out)))
 	}
 }
 
@@ -89,7 +89,7 @@ func TestEmitComponentsSkipsDocExternalTargetButStitchesRef(t *testing.T) {
 		t.Fatalf("EmitComponents: %v", err)
 	}
 	if _, emitted := out["Image"]; emitted {
-		t.Errorf("DocExternal node Image must not be emitted; components = %v", keysOf(out))
+		t.Errorf("DocExternal node Image must not be emitted; components = %v", slices.Sorted(maps.Keys(out)))
 	}
 	images := prop(t, component(t, out, "Book"), "images")
 	arms, ok := images["anyOf"].([]any)
@@ -249,7 +249,7 @@ func TestEmitComponentInlinesAux(t *testing.T) {
 	}
 
 	if _, ok := out["auxInner"]; !ok {
-		t.Errorf("an auxiliary still referenced must survive as a component; emitted %v", keysOf(out))
+		t.Errorf("an auxiliary still referenced must survive as a component; emitted %v", slices.Sorted(maps.Keys(out)))
 	}
 }
 
@@ -270,10 +270,10 @@ func TestFullyInlinedAuxIsDropped(t *testing.T) {
 		t.Fatalf("EmitComponents: %v", err)
 	}
 	if _, ok := out["soloInner"]; ok {
-		t.Errorf("a fully-inlined auxiliary must not surface as a component; emitted %v", keysOf(out))
+		t.Errorf("a fully-inlined auxiliary must not surface as a component; emitted %v", slices.Sorted(maps.Keys(out)))
 	}
 	if len(out) != 1 {
-		t.Errorf("expected only the node component, got %v", keysOf(out))
+		t.Errorf("expected only the node component, got %v", slices.Sorted(maps.Keys(out)))
 	}
 }
 
@@ -313,7 +313,7 @@ func TestEmitAuxMutualCycleDegradesToComponents(t *testing.T) {
 	// The mutually-referential pair survives as two components...
 	for _, want := range []string{"cycA", "cycB"} {
 		if _, ok := out[want]; !ok {
-			t.Fatalf("pinned auxiliary %q must be emitted; got %v", want, keysOf(out))
+			t.Fatalf("pinned auxiliary %q must be emitted; got %v", want, slices.Sorted(maps.Keys(out)))
 		}
 	}
 	// ...and every mention of them is a byte-correct $ref.
@@ -338,7 +338,7 @@ func TestEmitAuxSelfLoopDegradesToComponent(t *testing.T) {
 		t.Fatalf("a self-referential auxiliary must degrade, not error: %v", err)
 	}
 	if _, ok := out["selfAux"]; !ok {
-		t.Fatalf("pinned auxiliary selfAux must be emitted; got %v", keysOf(out))
+		t.Fatalf("pinned auxiliary selfAux must be emitted; got %v", slices.Sorted(maps.Keys(out)))
 	}
 	if got := prop(t, component(t, out, "Self"), "root"); !reflect.DeepEqual(got, ref("selfAux")) {
 		t.Errorf("Self.root = %v, want %v", got, ref("selfAux"))
@@ -377,10 +377,10 @@ func TestEmitAuxAcyclicFeederIntoCycleStillInlines(t *testing.T) {
 		t.Fatalf("EmitComponents: %v", err)
 	}
 	if _, ok := out["mixedFeeder"]; ok {
-		t.Errorf("the acyclic feeder must be inlined, not emitted: %v", keysOf(out))
+		t.Errorf("the acyclic feeder must be inlined, not emitted: %v", slices.Sorted(maps.Keys(out)))
 	}
 	if _, ok := out["mixedLeaf"]; ok {
-		t.Errorf("the acyclic leaf must be inlined, not emitted: %v", keysOf(out))
+		t.Errorf("the acyclic leaf must be inlined, not emitted: %v", slices.Sorted(maps.Keys(out)))
 	}
 	feed := prop(t, component(t, out, "Mixed"), "feed")
 	leaf, _ := feed["properties"].(map[string]any)["leaf"].(map[string]any)
@@ -427,7 +427,7 @@ func TestOpaqueComponentNeverInlined(t *testing.T) {
 	}
 	aux, ok := out["opqAux"]
 	if !ok {
-		t.Fatalf("the Opaque auxiliary must survive as a component; emitted %v", keysOf(out))
+		t.Fatalf("the Opaque auxiliary must survive as a component; emitted %v", slices.Sorted(maps.Keys(out)))
 	}
 	b, err := aux.IR().MarshalJSON()
 	if err != nil {
@@ -488,7 +488,7 @@ func TestEmittedComponentIsValidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range keysOf(out) {
+	for _, name := range slices.Sorted(maps.Keys(out)) {
 		b, err := out[name].IR().MarshalJSON()
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -544,7 +544,7 @@ func TestEmitComponentsRequiredToOneIsBareRefAndRequired(t *testing.T) {
 	// this graph must.
 	c := NewComponents()
 	c.ExternalRefs("Image")
-	for _, name := range keysOf(out) {
+	for _, name := range slices.Sorted(maps.Keys(out)) {
 		c.Add(name, out[name])
 	}
 	if err := c.Verify(); err != nil {
