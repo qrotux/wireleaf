@@ -389,6 +389,93 @@ All three run `ResolvePlan` first (400-before-fetch), then delegate to
 - `HydrateEntity` is for POST/PATCH: the doc is already in memory, no root
   fetch.
 
+## Inputs
+
+A root resource's **inputs** are the list parameters it accepts and the keys it
+accepts them under. `graph.Compile` derives the value from the node's `Inputs`
+declaration and its `col` tags, `apidoc.InputParams` documents it, and
+`ResolveInputs` enforces it — one value read by both, so the served document
+and the accepted requests cannot drift.
+
+```go
+type PageMode string // PageModeOffset "offset", PageModeCursor "cursor"
+
+type SortInputs struct {
+    Enabled bool
+    Default string            // WIRE form ("-name"); "" = the fetcher's own order
+    Keys    map[string]string // wire key → SQL sort key
+}
+type FilterInputs struct {
+    Enabled bool
+    Fields  map[string]Column // the FILTERABLE columns only
+}
+type PageInputs struct {
+    Mode         PageMode
+    DefaultLimit int
+    MaxLimit     int
+}
+type Inputs struct {
+    Sort   SortInputs
+    Filter FilterInputs
+    Page   PageInputs
+}
+
+// The OPTIONAL Resource seam. The bool reports whether the node DECLARED inputs.
+type InputSource interface{ Inputs() (Inputs, bool) }
+
+func DefaultInputs() Inputs
+func InputsOf(res Resource) (Inputs, bool)
+```
+
+`InputsOf` returns `DefaultInputs()` and `false` for a resource that is not an
+`InputSource`. Callers treat the two cases identically: "declared nothing" is
+one well-defined contract — offset pagination with `DefaultPageLimit` 20 and
+`DefaultMaxPageLimit` 100, **no sort, no filter** — not a special case.
+
+### ResolveInputs
+
+```go
+type RawInputs struct {
+    Sort   string
+    Page   int
+    Cursor string
+    Limit  int
+    Where  Filter // already parsed (ParseFilterJSON / ParseFilterQuery); nil = none
+}
+
+func ResolveInputs(root Resource, raw RawInputs, opts Options) (QueryArgs, error)
+```
+
+`ResolveInputs` is the **only** runtime enforcement of these parameters. A
+framework adapter validates just what it derives from its own input struct's
+tags (a missing field, a non-numeric `?limit=`); every rule below lives here,
+so the same request is judged the same way whichever transport bound it.
+`Include` is deliberately absent from `RawInputs`: the include string is parsed
+by the `Hydrator` method that consumes it.
+
+Every rejection is a `*Error` with status 400. On success `Limit` is never
+zero, for an `Inputs` built by `graph.Compile` or `DefaultInputs` (both of
+which give `Page.DefaultLimit` a non-zero value).
+
+| Parameter | Rule |
+| --- | --- |
+| `Sort` | `""` → `Inputs.Sort.Default`, resolved through `Keys` (wire → SQL, a leading `-` kept); a client key resolved the same way. An unknown key, or any non-empty key when sort is disabled → `INVALID_SORT`, `Path` = the clipped client key. Sort disabled *and* nothing to resolve → `Sort` stays `""`. |
+| `Limit` | `0` → `Page.DefaultLimit`; `< 0` or `> Page.MaxLimit` → `INVALID_PAGINATION` (`Path` `limit=<n>`). |
+| `Page`/`Cursor`, offset mode | `Page 0` → `1`; `Page < 0` → `INVALID_PAGINATION` (`page=<n>`); a non-empty `Cursor` → `INVALID_PAGINATION` (`cursor=<v>`, clipped). |
+| `Page`/`Cursor`, cursor mode | `Cursor` copied through opaquely; `Page != 0` → `INVALID_PAGINATION` (`page=<n>`); the resulting `QueryArgs.Page` is `0`. |
+| `Where` | nil → nil. Non-nil with filtering disabled → `INVALID_FILTER` (`Path` `"where"`). Otherwise `ResolveFilter(root, raw.Where, opts)`, whose errors (and codes) pass through unchanged. |
+
+The checks run in a fixed order and the first fault wins: sort → limit →
+page/cursor → where.
+
+The two page modes are mutually exclusive by rejection, not by precedence: a
+`?cursor=` sent to an offset list and a `?page=` sent to a cursor list are both
+faults, so a client cannot silently get the other mode's semantics.
+
+Unvalidated client text in `Path` is clipped by the same bound as the filter
+codes use (16 bytes plus `…`) — the client does not get to choose the size of
+the error body.
+
 ## Filters
 
 `include` carries the filter **model**: a sealed AST a parser produces, and
@@ -820,6 +907,8 @@ Planning and facade failures are `*include.Error{Code, Path, Status}`
 | `INVALID_FILTER` | 400 | `ResolveFilter`: unknown/non-filterable edge or column, root without columns, empty group, a to-many hop without a quantifier, a quantifier on a to-one hop, an unknown quantifier, unknown operator or operator illegal for the column type. For a leaf fault `Path` is `"a.b.field"`, the path up to the bad edge, `"a.b.field:op"`, or `"a.b:quant"`; for a **structural** fault (empty group, nil member, nil node) it is the node's position in the tree — `"and[1]"`, `"or[0].and[2]"` — since group members carry no names. The root has no position: an empty root-level group reports `""` |
 | `FILTER_TOO_DEEP` | 400 | `MaxFilterDepth`, `MaxFilterMany` **or** `MaxFilterNodes` exceeded; for a too-deep or too-many path `Path` is the client path's keys cut to `MaxFilterDepth+1` segments, each one itself bounded to 16 bytes plus `…`, with a trailing `…` only when segments were actually dropped — so a too-many-hops path (bounded by `MaxFilterDepth` already) always comes back whole and unmarked (a node-count fault carries an empty `Path`) |
 | `FILTER_TOO_EXPENSIVE` | 400 | `ResolveFilter`: the tree's to-many hops, summed over every condition, exceed `MaxFilterSubqueries`. A tree-wide fault, so `Path` is empty; the client fixes it by dropping conditions that cross to-many edges |
+| `INVALID_SORT` | 400 | `ResolveInputs`: a `?sort=` key the node does not accept — sort not enabled, or the key (after an optional leading `-`) is not one of `Inputs.Sort.Keys`. `Path` echoes the client's key, clipped |
+| `INVALID_PAGINATION` | 400 | `ResolveInputs`: a pagination value outside the node's contract — a limit above `MaxLimit` or negative, a negative page, `?page=` in cursor mode, `?cursor=` in offset mode. `Path` names the parameter and the value (`"limit=500"`, `"page=-2"`, `"cursor=abc"`) |
 | `NOT_FOUND` | 404 | `HydrateByID`'s fetch returned a nil doc |
 
 Materialize-time failures — a fetcher error, a missing registration, a strict
