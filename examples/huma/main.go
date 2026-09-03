@@ -4,19 +4,22 @@
 // ?include= parameter is documented from the graph itself.
 //
 // The program builds the API on net/http's ServeMux, serves it in-process
-// with httptest, performs four requests, and prints what the document says
-// about the include parameter — so it runs to completion like the other
-// examples instead of listening on a port.
+// with httptest, performs a handful of requests, and prints what the document
+// says about the parameters and the Book component — so it runs to completion
+// like the other examples instead of listening on a port.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
+	"strings"
 
 	humav2 "github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
@@ -33,6 +36,7 @@ import (
 type bookRow struct {
 	ID       string
 	Title    string
+	Year     int
 	AuthorID string
 }
 
@@ -41,20 +45,25 @@ type authorRow struct {
 	Name string
 }
 
+// Wire types are what the reflector documents. Field annotations use the
+// swaggest tag set (description, title, format, minimum, enum, ...): they land
+// in the component's JSON Schema verbatim. Nullability is NOT a tag concern —
+// the policy decides it from the Go shape.
 type BookWire struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
+	ID    string `json:"id" description:"Stable book identifier" example:"b1"`
+	Title string `json:"title" description:"Title as printed on the cover" minLength:"1"`
+	Year  int    `json:"year" description:"Year of first publication" minimum:"1450"`
 }
 
 type AuthorWire struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID   string `json:"id" description:"Stable author identifier" example:"a1"`
+	Name string `json:"name" description:"Display name, as commonly credited"`
 }
 
 var books = map[string]bookRow{
-	"b1": {ID: "b1", Title: "The Hobbit", AuthorID: "a1"},
-	"b2": {ID: "b2", Title: "The Silmarillion", AuthorID: "a1"},
-	"b3": {ID: "b3", Title: "Dune", AuthorID: "a2"},
+	"b1": {ID: "b1", Title: "The Hobbit", Year: 1937, AuthorID: "a1"},
+	"b2": {ID: "b2", Title: "The Silmarillion", Year: 1977, AuthorID: "a1"},
+	"b3": {ID: "b3", Title: "Dune", Year: 1965, AuthorID: "a2"},
 }
 
 var authors = map[string]authorRow{
@@ -78,7 +87,7 @@ func buildGraph() (*graph.Graph, include.Resource) {
 
 	book := graph.Node[bookRow, BookWire](b, "Book").
 		Slug("book").
-		Wire(func(r bookRow, _ *include.Ctx) BookWire { return BookWire{ID: r.ID, Title: r.Title} }).
+		Wire(func(r bookRow, _ *include.Ctx) BookWire { return BookWire{ID: r.ID, Title: r.Title, Year: r.Year} }).
 		PrimaryKey(func(r bookRow) string { return r.ID })
 	author := graph.Node[authorRow, AuthorWire](b, "Author").
 		Slug("author").
@@ -153,8 +162,12 @@ type BookPageEnvelope struct {
 	Pagination wfhuma.PagePagination   `json:"pagination"`
 }
 
+// Input structs are huma's: path/query parameters are documented with huma's
+// own tag set (doc, default, minimum, maximum, enum, example, ...), which is a
+// DIFFERENT dialect from the wire types above — `doc:` here, `description:`
+// there. A body field would go back through the bridge to the reflector.
 type getBookInput struct {
-	ID string `path:"id"`
+	ID string `path:"id" doc:"Book identifier" example:"b1"`
 	// Op's IncludeParam declares this parameter first (with x-include-paths);
 	// huma sees the name is taken, keeps that declaration, and still binds
 	// the query value here.
@@ -167,7 +180,10 @@ type getBookOutput struct {
 
 type listBooksInput struct {
 	Include string `query:"include"`
-	Page    int    `query:"page" default:"1" minimum:"1"`
+	Page    int    `query:"page" default:"1" minimum:"1" doc:"Page number, 1-based"`
+	Limit   int    `query:"limit" default:"2" minimum:"1" maximum:"50" doc:"Books per page"`
+	Sort    string `query:"sort" default:"title" enum:"title,-title,year,-year" doc:"Sort key; a leading '-' sorts descending"`
+	Q       string `query:"q" minLength:"2" example:"hobbit" doc:"Case-insensitive substring match on the title"`
 }
 
 type listBooksOutput struct {
@@ -184,9 +200,29 @@ func asHumaError(err error) error {
 	return err
 }
 
-// ------------------------------------------------------------------ wiring
+// selectBooks applies the list query: substring filter on the title, then the
+// declared sort key. huma has already validated q and sort against the tags.
+func selectBooks(q, sortKey string) []bookRow {
+	rows := make([]bookRow, 0, len(books))
+	for _, id := range sortedKeys(books) {
+		if r := books[id]; q == "" || strings.Contains(strings.ToLower(r.Title), strings.ToLower(q)) {
+			rows = append(rows, r)
+		}
+	}
+	desc := strings.HasPrefix(sortKey, "-")
+	switch strings.TrimPrefix(sortKey, "-") {
+	case "year":
+		sort.SliceStable(rows, func(i, j int) bool { return rows[i].Year < rows[j].Year })
+	default:
+		sort.SliceStable(rows, func(i, j int) bool { return rows[i].Title < rows[j].Title })
+	}
+	if desc {
+		slices.Reverse(rows)
+	}
+	return rows
+}
 
-const pageSize = 2
+// ------------------------------------------------------------------ wiring
 
 func buildAPI() (*http.ServeMux, humav2.Config) {
 	g, bookRes := buildGraph()
@@ -256,16 +292,16 @@ func buildAPI() (*http.ServeMux, humav2.Config) {
 			return nil, asHumaError(err)
 		}
 		fetch := func(_ *include.Ctx, q include.QueryArgs) ([]any, int, bool, error) {
-			ids := sortedKeys(books)
-			start := min((q.Page-1)*q.Limit, len(ids))
-			end := min(start+q.Limit, len(ids))
+			rows := selectBooks(in.Q, in.Sort)
+			start := min((q.Page-1)*q.Limit, len(rows))
+			end := min(start+q.Limit, len(rows))
 			docs := make([]any, 0, end-start)
-			for _, id := range ids[start:end] {
-				docs = append(docs, books[id])
+			for _, r := range rows[start:end] {
+				docs = append(docs, r)
 			}
-			return docs, len(ids), end < len(ids), nil
+			return docs, len(rows), end < len(rows), nil
 		}
-		res, _, err := include.HydrateByQuery(bookRes, include.QueryArgs{Page: in.Page, Limit: pageSize}, inc, nil, fetch,
+		res, _, err := include.HydrateByQuery(bookRes, include.QueryArgs{Page: in.Page, Limit: in.Limit}, inc, nil, fetch,
 			&include.Ctx{Context: ctx, Registry: g}, opts)
 		if err != nil {
 			return nil, asHumaError(err)
@@ -274,7 +310,7 @@ func buildAPI() (*http.ServeMux, humav2.Config) {
 		for i, raw := range res.Data {
 			data[i] = wfhuma.NodeOf[BookWire](raw)
 		}
-		totalPages := (res.Total + pageSize - 1) / pageSize
+		totalPages := (res.Total + in.Limit - 1) / in.Limit
 		return &listBooksOutput{Body: BookPageEnvelope{
 			Data: data,
 			Pagination: wfhuma.PagePagination{
@@ -298,6 +334,8 @@ func main() {
 		"/books/b1?include=author",
 		"/books/b1?include=author.books",
 		"/books?include=author&page=2",
+		"/books?q=the&sort=-year&limit=5",
+		"/books?sort=isbn",
 		"/books/nope",
 		"/books/b1?include=ghost",
 	} {
@@ -311,7 +349,8 @@ func main() {
 	}
 
 	// The served document: the include parameter carries every legal path,
-	// and the response bodies $ref the graph-derived components.
+	// the other parameters carry their huma tags, and the response bodies
+	// $ref the graph-derived components whose properties carry the wire tags.
 	oapi := cfg.OpenAPI
 	get := oapi.Paths["/books/{id}"].Get
 	for _, p := range get.Parameters {
@@ -319,6 +358,13 @@ func main() {
 			fmt.Println("x-include-paths:", p.Schema.Extensions[apidoc.XIncludePaths])
 		}
 	}
+	fmt.Println("GET /books parameters:")
+	for _, p := range oapi.Paths["/books"].Get.Parameters {
+		schema, _ := json.Marshal(p.Schema)
+		fmt.Printf("  %-8s %-48q %s\n", p.Name, p.Description, schema)
+	}
+	book, _ := json.Marshal(wfhuma.BridgeOf(oapi).Map()["Book"])
+	fmt.Println("components.Book:", string(book))
 	names := make([]string, 0)
 	for name := range wfhuma.BridgeOf(oapi).Map() {
 		names = append(names, name)
