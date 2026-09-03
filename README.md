@@ -167,6 +167,8 @@ together) is a compile finding, not a runtime surprise.
 | `graph.InArray[TargetWire](arrayPath, subField)` | `.ForeignKeys` harvests one id **per element** of the parent's `arrayPath`, in array order; loaded through `FetchIDs` | each element of `arrayPath` gains `subField` |
 | `graph.Computed(schema)` | not fetched — application code produces the value | whatever `schema` documents |
 
+When the target's wire type is a run-time value rather than a type parameter (an adapter building the graph from an external description), `graph.ToOneWire`, `ToManyWire`, `ReverseWire` and `InArrayWire` take a `reflect.Type` and build the same `EdgeKind`; the generic constructors are wrappers over them. See [docs/graph.md](docs/graph.md#kinds).
+
 ```go
 // Columns come from the TARGET wire struct's `col:"sql_name[,sort][,filter]"`
 // tags — `sort` makes the field a legal sort key (so graph.Sort below has

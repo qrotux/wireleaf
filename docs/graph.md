@@ -18,7 +18,7 @@ reads to emit OpenAPI components (`WireSample`, `FieldVerdicts`,
 | --- | --- |
 | `Builder` | Accumulates declarations. Single-goroutine, write-only; dead after `Compile`. |
 | `NodeHandle[Row, Wire]` | Typed façade over one declared node: chained configurator and the value you keep for edges, roots and fetcher binds. |
-| `EdgeKind` | Opaque discriminant of the five edge kinds; built only through `ToOne` / `ToMany` / `Reverse` / `InArray` / `Computed`. |
+| `EdgeKind` | Opaque discriminant of the five edge kinds; built only through `ToOne` / `ToMany` / `Reverse` / `InArray` / `Computed`, or their `*Wire` twins when the target type is a run-time value. |
 | `EdgeBuilder[Row]` | Chained configurator returned by `NodeHandle.Edge`, typed by the parent's Row. |
 | `Spec[Row, Wire]`, `EdgeSpec[Row]` | The declarative (struct-literal) form of one node and its edges; `Add` registers a `Spec` and returns its `NodeHandle`. |
 | `OneToManyRelation`, `ManyToManyRelation` | Both directions of a link between two handles in one chained declaration (`OneToMany`, `ManyToMany`). |
@@ -138,6 +138,12 @@ func ToMany[W any]() EdgeKind                         // parent holds an FK arra
 func Reverse[W any](backref string) EdgeKind          // FK lives on the child, in backref
 func InArray[W any](arrayPath, subField string) EdgeKind // FKs inside parent's array, positional
 func Computed(schema apidoc.Schema) EdgeKind          // no target; app produces the value
+
+// the same four, for a target wire type held as a run-time value
+func ToOneWire(wire reflect.Type) EdgeKind
+func ToManyWire(wire reflect.Type) EdgeKind
+func ReverseWire(wire reflect.Type, backref string) EdgeKind
+func InArrayWire(wire reflect.Type, arrayPath, subField string) EdgeKind
 ```
 
 `W` is always the **target** node's wire type; `EdgeKind`'s fields are
@@ -145,6 +151,15 @@ unexported, so only these constructors build one. `Reverse` requires a
 non-empty `backref`, `InArray` a non-empty `arrayPath` and `subField`
 (findings otherwise); an `InArray` `ForeignKeys` result is positional — 1:1
 with the parent's array elements, in array order.
+
+The `*Wire` constructors serve adapters that derive a graph from an external
+description (an existing engine, a config, a schema) and hold the target's
+wire type as a `reflect.Type` value. The generic constructors are wrappers
+over them, so `ReverseWire(reflect.TypeFor[W](), "authorId")` is
+`Reverse[W]("authorId")` field for field, and validation is `Compile`'s on
+both paths: a `nil` `wire` is the finding `edge has no target node`, an
+undeclared one `edge target: no node of this builder declares wire type T`,
+never a panic.
 
 ### Edge options (`EdgeBuilder[Row]` methods)
 

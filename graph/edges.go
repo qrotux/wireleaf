@@ -27,26 +27,45 @@ type EdgeKind struct {
 
 // ToOne the parent holds a single scalar FK (declare it with .ForeignKey).
 // W is the TARGET node's wire type.
-func ToOne[W any]() EdgeKind {
-	return EdgeKind{kind: include.KindToOne, targetWireT: reflect.TypeFor[W]()}
-}
+func ToOne[W any]() EdgeKind { return ToOneWire(reflect.TypeFor[W]()) }
 
 // ToMany the parent holds an FK array (forward-hasMany; declare it with
 // .ForeignKeys). W is the TARGET node's wire type.
-func ToMany[W any]() EdgeKind {
-	return EdgeKind{kind: include.KindForwardHasMany, targetWireT: reflect.TypeFor[W]()}
-}
+func ToMany[W any]() EdgeKind { return ToManyWire(reflect.TypeFor[W]()) }
 
 // Reverse the FK lives on the child, in the field named by backref. W is the
 // TARGET node's wire type.
-func Reverse[W any](backref string) EdgeKind {
-	return EdgeKind{kind: include.KindReverse, targetWireT: reflect.TypeFor[W](), backref: backref}
-}
+func Reverse[W any](backref string) EdgeKind { return ReverseWire(reflect.TypeFor[W](), backref) }
 
 // InArray the FK elements live inside arrayPath on the parent, under
 // subField (harvest them with .ForeignKeys). W is the TARGET node's wire type.
 func InArray[W any](arrayPath, subField string) EdgeKind {
-	return EdgeKind{kind: include.KindInArray, targetWireT: reflect.TypeFor[W](), arrayPath: arrayPath, subField: subField}
+	return InArrayWire(reflect.TypeFor[W](), arrayPath, subField)
+}
+
+// ToOneWire is ToOne for a wire type held as a run-time value — the shape an
+// adapter has when it derives a graph from an external description (an
+// existing engine, a config, a schema). The generic constructors are wrappers
+// over the four *Wire ones, so the results are identical, and validation is
+// Compile's on both paths: a nil or undeclared wire type is a finding, never a
+// panic here. ToManyWire, ReverseWire and InArrayWire follow the same rules.
+func ToOneWire(wire reflect.Type) EdgeKind {
+	return EdgeKind{kind: include.KindToOne, targetWireT: wire}
+}
+
+// ToManyWire is ToMany for a wire type known at run time.
+func ToManyWire(wire reflect.Type) EdgeKind {
+	return EdgeKind{kind: include.KindForwardHasMany, targetWireT: wire}
+}
+
+// ReverseWire is Reverse for a wire type known at run time.
+func ReverseWire(wire reflect.Type, backref string) EdgeKind {
+	return EdgeKind{kind: include.KindReverse, targetWireT: wire, backref: backref}
+}
+
+// InArrayWire is InArray for a wire type known at run time.
+func InArrayWire(wire reflect.Type, arrayPath, subField string) EdgeKind {
+	return EdgeKind{kind: include.KindInArray, targetWireT: wire, arrayPath: arrayPath, subField: subField}
 }
 
 // Computed an edge with no target node whose value is produced by application
