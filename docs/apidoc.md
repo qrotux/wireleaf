@@ -433,10 +433,13 @@ The returned order is fixed:
 |---|------|--------------|--------|
 | 1 | `include` | always | `IncludeParamSchema(IncludePaths(res, limits))` |
 | 2 | `sort` | `Inputs.Sort.Enabled` | `{"type":"string","enum":["k","-k",…]}`, plus `"default"` when `Sort.Default` is set |
-| 3 | `page` | `Page.Mode == PageModeOffset` | `{"type":"integer","minimum":1,"default":1}` |
-| 3 | `cursor` | `Page.Mode == PageModeCursor` | `{"type":"string"}` |
+| 3a | `page` | `Page.Mode == PageModeOffset` | `{"type":"integer","minimum":1,"default":1}` |
+| 3b | `cursor` | `Page.Mode == PageModeCursor` | `{"type":"string"}` |
 | 4 | `limit` | always | `{"type":"integer","minimum":1,"maximum":Page.MaxLimit,"default":Page.DefaultLimit}` |
 | 5 | `where` | `Inputs.Filter.Enabled` | per syntax, below |
+
+Slots 3a and 3b are **alternatives**, never both: the page mode picks one, so
+position 3 holds `page` on an offset list and `cursor` on a cursor list.
 
 The `sort` enum lists each wire key in both directions (`k` and `-k`), sorted
 by key. A node that declared nothing yields `include`, `page`, `limit` only,

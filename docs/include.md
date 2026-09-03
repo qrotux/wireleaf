@@ -8,10 +8,9 @@ materialize with level-batched child loading. The engine is transport-free
 and DB-free; `Ctx.Request` carries an HTTP-shaped snapshot (stdlib types
 only) that an adapter fills and application hooks read — every round-trip
 still goes through fetcher closures the application supplies. `graph` is the
-typed builder producing the `Resource`/`Edge`/
-`Registry` values this package consumes (`graph.Compile`'s `*graph.Graph`
-implements `include.Registry`); `apidoc` reads the same declarations to emit
-OpenAPI components.
+typed builder producing the `Resource`/`Edge`/`Registry` values this package
+consumes (`graph.Compile`'s `*graph.Graph` implements `include.Registry`);
+`apidoc` reads the same declarations to emit OpenAPI components.
 
 The pipeline is `ParseInclude`/`ParseExclude` (strings) → `ResolvePlan`
 (`*PlanNode`) → `Materialize` (`[]json.RawMessage`); handlers normally call
@@ -462,7 +461,7 @@ type SortInputs struct {
 }
 type FilterInputs struct {
     Enabled bool
-    Fields  map[string]Column // the FILTERABLE columns only
+    Fields  map[string]Column // DOCUMENTATION vocabulary, not the check set
 }
 type PageInputs struct {
     Mode         PageMode
@@ -481,6 +480,13 @@ type InputSource interface{ Inputs() (Inputs, bool) }
 func DefaultInputs() Inputs
 func InputsOf(res Resource) (Inputs, bool)
 ```
+
+`Filter.Enabled` is the only part of `FilterInputs` `ResolveInputs` reads:
+`Fields` is the **documentation** vocabulary — the filterable root columns
+`apidoc.InputParams` renders into the `?where=` description and
+`x-filter-fields` — while the runtime check is `ResolveFilter(root, …)`, which
+judges every name (root columns *and* the columns reached across a filterable
+edge, which `Fields` does not list) against the resource graph itself.
 
 `InputsOf` returns `DefaultInputs()` and `false` for a resource that is not an
 `InputSource`. Callers treat the two cases identically: "declared nothing" is

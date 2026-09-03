@@ -104,7 +104,9 @@ func (b *Bound[W]) Hydrate(ctx context.Context, doc any, inc string) (Node[W], e
 // ListQuery is the list parameter block to embed anonymously in an input
 // struct. Tags carry only the names: the document comes from Inputs(), the
 // validation from include.ResolveInputs inside List. In bracket filter mode
-// Where is unused; the where[...] keys are read from the request.
+// the filter is read from the request's where[...] keys instead, and a
+// non-empty Where — the JSON spelling, which that mode does not accept — is a
+// 400 INVALID_FILTER rather than a silently unfiltered page.
 type ListQuery struct {
 	Include string `query:"include"`
 	Sort    string `query:"sort"`
@@ -175,6 +177,14 @@ func (b *Bound[W]) List(ctx context.Context, q ListQuery, fetch include.ListFetc
 
 func (b *Bound[W]) parseWhere(ctx context.Context, raw string) (include.Filter, error) {
 	if b.api.syntax == apidoc.FilterBracket {
+		// In bracket mode the document describes `where` as a deepObject, so a
+		// bare `?where=<json>` is the WRONG spelling, not an empty one — and
+		// huma binds ListQuery.Where only from a literal `where=` key, never
+		// from a `where[...]` one, so a non-empty raw here can only be that
+		// mistake. Rejecting it beats answering it with an unfiltered 200.
+		if raw != "" {
+			return nil, include.NewError(include.INVALID_FILTER, "where")
+		}
 		r := requestOf(ctx)
 		if r == nil {
 			return nil, errors.New("adapters/huma: bracket filter needs Attach (no request snapshot on the context)")

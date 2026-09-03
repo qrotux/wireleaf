@@ -34,8 +34,10 @@ type SortInput struct {
 // FilterInput enables ?where= over the node's `filter` columns.
 type FilterInput struct{ Enabled bool }
 
-// PageInput bounds pagination. Zero limits take the include defaults (20 /
-// 100); a zero Mode is offset.
+// PageInput bounds pagination. A zero Mode is offset. A zero MaxLimit takes
+// the include default (100); a zero DefaultLimit takes the include default
+// (20) capped by MaxLimit, so PageInput{MaxLimit: 10} compiles to 10/10. An
+// EXPLICIT DefaultLimit above MaxLimit is a compile finding.
 type PageInput struct {
 	Mode         include.PageMode
 	DefaultLimit int
@@ -111,6 +113,14 @@ func compileInputs(fs *findingList, n *nodeSpec, cols map[string]include.Column)
 	}
 	if p.MaxLimit > 0 {
 		out.Page.MaxLimit = p.MaxLimit
+	}
+	// An UNDECLARED default settles under the cap: a node that only lowers
+	// MaxLimit (PageInput{MaxLimit: 10}) must compile, and its default page is
+	// the cap, not the package default it exceeds. An EXPLICIT default above
+	// the cap stays a finding — that one is a contradiction in the
+	// declaration, not an omission.
+	if p.DefaultLimit == 0 && out.Page.DefaultLimit > out.Page.MaxLimit {
+		out.Page.DefaultLimit = out.Page.MaxLimit
 	}
 	if out.Page.DefaultLimit > out.Page.MaxLimit {
 		fs.add(n.name, "", "Inputs.Pagination.DefaultLimit %d exceeds MaxLimit %d", out.Page.DefaultLimit, out.Page.MaxLimit)

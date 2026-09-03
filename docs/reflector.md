@@ -120,9 +120,9 @@ declaration stands.
   `contentEncoding`/`contentMediaType`. `x-…` keys go into IR Extensions (any
   `$ref` inside an extension value is rewritten into document coordinates so
   the dangling-ref check sees it); a non-`x-` unmatched key is an error.
-  `doc` is accepted as an alias of `description` (huma's dialect), so wire
-  types, bodies and input structs share one tag; both present with different
-  text is a reflection error.
+  `doc:"…"` is accepted as an alias of `description:"…"` (huma's dialect), so
+  wire types, bodies and input structs share one tag; both present with
+  different text is a reflection error.
 
 `required` from the engine's `required` tag is ignored — the policy decides.
 `additionalProperties: false` is never synthesized for structs (see the README

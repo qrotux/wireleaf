@@ -137,3 +137,10 @@ func TestAPIRequestOfWithoutMiddleware(t *testing.T) {
 		t.Fatalf("requestOf(bare ctx) = %+v, want nil", r)
 	}
 }
+
+func TestAPIAttachTwicePanics(t *testing.T) {
+	a := New(inputsGraph(t), include.DefaultOptions, "t", "1")
+	_, h := humatest.New(t, a.Config())
+	a.Attach(h)
+	assertPanicsWith(t, "Attach called twice", func() { a.Attach(h) })
+}

@@ -118,12 +118,29 @@ func (a *API) Graph() *graph.Graph { return a.g }
 // Options returns the include options the planner and the document share.
 func (a *API) Options() include.Options { return a.opts }
 
-// Attach installs the request middleware on h and makes Register usable.
+// Attach installs the request middleware on h, hooks the document so Inputs'
+// pruning runs on every operation huma adds, and makes Register usable. Call
+// it once.
 func (a *API) Attach(h humav2.API) {
 	if h == nil {
 		panic("adapters/huma: Attach needs a huma API")
 	}
+	if a.huma != nil {
+		panic("adapters/huma: Attach called twice")
+	}
 	h.UseMiddleware(requestMiddleware)
+	// The pruning is a document hook, not a step after Register, because h may
+	// be a *humav2.Group: a group rewrites op.Path through its prefix modifier
+	// on the way to AddOperation, so the path Register holds is not the path
+	// the operation is filed under and looking it up by that path would panic.
+	// OnAddOperation runs with the operation huma actually filed — after
+	// processInputType appended the ListQuery-derived parameters, and under
+	// its final path. A hidden operation is never added, and has nothing to
+	// prune.
+	oapi := h.OpenAPI()
+	oapi.OnAddOperation = append(oapi.OnAddOperation, func(_ *humav2.OpenAPI, op *humav2.Operation) {
+		dropQueryParams(op)
+	})
 	a.huma = h
 }
 
@@ -155,6 +172,17 @@ func (a *API) Include(res include.Resource) OpOpt {
 // include.ResolveInputs, which reads the same include.Inputs this documents.
 // The two cannot drift because they share the source; they are nonetheless
 // two different mechanisms, and the 400s below come from the resolver.
+//
+// ORDER MATTERS. Inputs also PRUNES: every query parameter huma would derive
+// from ListQuery that this resource does not accept (the off-mode page or
+// cursor, sort when the node disabled sorting, where when it disabled
+// filtering) is removed from the registered operation, so the document never
+// advertises an input the resolver will reject. The "already declared" snapshot
+// that exempts a parameter from both the documenting and the pruning is taken
+// when the decorator RUNS — so an application that wants to keep one of those
+// names on the operation must declare it BEFORE Inputs() in the option list; a
+// decorator listed after Inputs() is invisible to it and its parameter is
+// pruned.
 func (a *API) Inputs(res include.Resource) OpOpt {
 	params := apidoc.InputParams(res, a.opts.Limits, a.syntax)
 	in, _ := include.InputsOf(res)
@@ -189,55 +217,73 @@ func (a *API) Inputs(res include.Resource) OpOpt {
 			op.Parameters = append(op.Parameters, hp)
 		}
 		errs(op)
-		// ListQuery carries BOTH page and cursor, because the resolver has to
-		// see the off-mode one to reject it (INVALID_PAGINATION). huma derives
-		// a query parameter from every tagged field, so without this the
-		// document of a cursor resource would advertise ?page and an offset
-		// one ?cursor — the very drift Inputs exists to prevent. The removal
-		// cannot happen here: huma appends the struct-derived parameters after
-		// the decorators run, so Register does it on the registered operation.
-		drop := "cursor"
-		if in.Page.Mode == include.PageModeCursor {
-			drop = "page"
+		// ListQuery carries EVERY list field — both page and cursor, sort and
+		// where — because the resolver has to SEE a value the resource does
+		// not accept in order to reject it (INVALID_PAGINATION / INVALID_SORT
+		// / INVALID_FILTER). huma derives a query parameter from every tagged
+		// field, so without this the document of a cursor resource would
+		// advertise ?page, an offset one ?cursor, and a resource with sorting
+		// or filtering switched off would advertise a bare untyped ?sort /
+		// ?where — the very drift Inputs exists to prevent. InputParams is the
+		// authority on what IS documented; everything ListQuery can carry and
+		// InputParams left out is dropped. The removal cannot happen here:
+		// huma appends the struct-derived parameters after the decorators run,
+		// so this only RECORDS the names, and Attach's OnAddOperation hook
+		// prunes them off the operation huma files in the document.
+		documented := map[string]bool{}
+		for _, p := range params {
+			documented[p.Name] = true
 		}
-		if !declared[drop] {
+		var drop []string
+		for _, name := range listQueryParams {
+			if !documented[name] && !declared[name] {
+				drop = append(drop, name)
+			}
+		}
+		if len(drop) > 0 {
 			m := maps.Clone(op.Metadata) // never write through a shared base's map
 			if m == nil {
 				m = map[string]any{}
 			}
 			prev, _ := m[metaDropQuery].([]string)
-			m[metaDropQuery] = append(append([]string{}, prev...), drop)
+			m[metaDropQuery] = append(append([]string{}, prev...), drop...)
 			op.Metadata = m
 		}
 	}
 }
 
-// metaDropQuery is the operation-metadata key Inputs uses to tell Register
-// which huma-derived query parameters the resource does not accept. huma's
+// listQueryParams are the query parameter names huma derives from ListQuery.
+// Inputs drops the ones apidoc.InputParams did not document. Keep in sync with
+// ListQuery's query tags (bound.go).
+var listQueryParams = []string{"include", "sort", "page", "cursor", "limit", "where"}
+
+// metaDropQuery is the operation-metadata key Inputs uses to tell the
+// document hook which huma-derived query parameters the resource does not
+// accept. huma's
 // Operation.Metadata is yaml:"-", so it never reaches the document.
 const metaDropQuery = "wireleaf:drop-query-params"
 
-// dropQueryParams removes the parameters Inputs marked from the operation huma
-// registered. A hidden operation is not in the document and has nothing to
-// prune.
-func dropQueryParams(oapi *humav2.OpenAPI, op humav2.Operation) {
+// dropQueryParams removes the parameters Inputs marked from op, in place. It
+// runs from Attach's OnAddOperation hook, so op is the operation huma filed in
+// the document: its parameter list is final and its path is whatever a group
+// prefix made it.
+func dropQueryParams(op *humav2.Operation) {
 	names, _ := op.Metadata[metaDropQuery].([]string)
-	if len(names) == 0 || op.Hidden {
+	if len(names) == 0 {
 		return
 	}
 	drop := map[string]bool{}
 	for _, n := range names {
 		drop[n] = true
 	}
-	reg := operationAt(oapi, op.Method, op.Path)
-	kept := reg.Parameters[:0:0]
-	for _, p := range reg.Parameters {
+	kept := op.Parameters[:0:0]
+	for _, p := range op.Parameters {
 		if p != nil && p.In == "query" && drop[p.Name] {
 			continue
 		}
 		kept = append(kept, p)
 	}
-	reg.Parameters = kept
+	op.Parameters = kept
 }
 
 // Register registers op with its decorators on the attached huma API.
@@ -246,9 +292,7 @@ func Register[I, O any](a *API, op humav2.Operation, handler func(context.Contex
 		panic("adapters/huma: Register before Attach")
 	}
 	a.checkBound(reflect.TypeFor[O]())
-	final := Op(op, opts...)
-	humav2.Register(a.huma, final, handler)
-	dropQueryParams(a.huma.OpenAPI(), final)
+	humav2.Register(a.huma, Op(op, opts...), handler)
 }
 
 // checkBound walks t and panics on a Node[W] wrapper no Bind registered:

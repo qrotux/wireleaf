@@ -88,10 +88,6 @@ Two services can share one router: `Config()` returns the config by value, so
 moving `cfg.OpenAPIPath` / `cfg.DocsPath` aside before handing it to the router
 adapter keeps the two documents from colliding.
 
-Without `WithRegistry`, `NewConfig` bridges over a fresh
-`apidoc.NewComponents()` — only useful for a document with no graph-derived
-components.
-
 ## Config (config.go)
 
 ```go
@@ -99,6 +95,12 @@ func NewConfig(title, version string, opts ...ConfigOpt) humav2.Config
 func WithRegistry(c *apidoc.Components) ConfigOpt
 func BridgeOf(oapi *humav2.OpenAPI) *Registry   // panics if not NewConfig-built
 ```
+
+`New` calls `NewConfig` for you, with `WithRegistry` pointed at the components
+it emitted from the graph — `a.Config()` is that result. Calling `NewConfig`
+by hand is the no-graph path: without `WithRegistry` it bridges over a fresh
+`apidoc.NewComponents()`, only useful for a document with no graph-derived
+components.
 
 What `NewConfig` fixes relative to `huma.DefaultConfig`:
 
@@ -194,6 +196,8 @@ loudly:
 
 - `Register` before `Attach` panics with `adapters/huma: Register before
   Attach` — there is no huma API to register on yet.
+- A second `Attach` panics with `adapters/huma: Attach called twice` — it would
+  install the middleware and the document hook twice over.
 - `Register` walks the output type `O` (through pointers, slices, arrays, maps
   and struct fields) and panics on a `Node[W]` wrapper no `Bind` registered.
   Without the guard the same wiring bug surfaces later, deep inside huma's
@@ -229,6 +233,21 @@ response by `Errors`.
 > which reads the same `include.Inputs` this documents — so the two cannot
 > drift, but they are two different mechanisms, and the 400s come from the
 > resolver, not from huma's validator.
+
+`Inputs()` also **prunes**: every query parameter huma derives from `ListQuery`
+that `apidoc.InputParams` did not document (the off-mode `page` or `cursor`,
+`sort` with sorting disabled, `where` with filtering disabled) is removed, so
+the document never advertises an input the resolver will reject. The removal
+cannot happen in the decorator — huma appends the struct-derived parameters
+*after* the decorators run — so `Inputs()` records the names in the operation's
+metadata under `wireleaf:drop-query-params` (`Metadata` is `yaml:"-"`, so it
+never reaches the document) and the `OnAddOperation` hook `Attach` installed
+prunes them off the operation huma files. A hook, not a step after `Register`,
+because `h` may be a `humav2.Group`: a group rewrites `op.Path` through its
+prefix modifier on the way into the document, so the path `Register` holds is
+not the path the operation is filed under. The parameters a decorator declared
+**before** `Inputs()` in the option list are exempt from both the documenting
+and the pruning; one listed after it is invisible to `Inputs()`.
 
 ### The request middleware (request.go)
 
@@ -331,9 +350,13 @@ share `include.Inputs`, but they are two mechanisms).
 | `apidoc.FilterJSON` (default) | `q.Where` (empty → no filter) | `include.ParseFilterJSON` |
 | `apidoc.FilterBracket` | `where[…]` keys of the request snapshot | `include.ParseFilterQuery` |
 
-In bracket mode `q.Where` is unused, and a call with no snapshot on the context
-fails with `adapters/huma: bracket filter needs Attach …` — the keys can only be
-read off a real request.
+In bracket mode the filter comes from the `where[…]` keys, and a call with no
+snapshot on the context fails with `adapters/huma: bracket filter needs Attach
+…` — the keys can only be read off a real request. A **non-empty** `q.Where` in
+that mode is the JSON spelling of a document that describes `where` as a
+`deepObject`, so `?where={"title":{"eq":"x"}}` is a `400 INVALID_FILTER`, not a
+silently unfiltered page. It cannot misfire: huma binds `ListQuery.Where` from a
+literal `where=` key only, never from a `where[…]` one.
 
 `List` then runs `ResolveInputs` and `Hydrator.Query(ctx, args, q.Include,
 fetch)` and assembles the page:

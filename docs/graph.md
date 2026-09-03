@@ -316,7 +316,8 @@ type SortInput struct {
 type FilterInput struct{ Enabled bool }
 type PageInput struct {
     Mode                   include.PageMode // "" = offset
-    DefaultLimit, MaxLimit int              // 0 = include defaults (20 / 100)
+    DefaultLimit, MaxLimit int              // 0 = include defaults (20 / 100),
+                                            // the default capped by MaxLimit
 }
 ```
 
@@ -330,6 +331,13 @@ the node does not bind:
   `include.Column`.
 - `Page` = the declaration, with `Mode: ""` → `offset` and a zero limit taking
   the `include` default (`DefaultPageLimit` 20 / `DefaultMaxPageLimit` 100).
+
+A zero `DefaultLimit` resolves to the include default **capped by the resolved
+`MaxLimit`** — `min(20, MaxLimit)` — so lowering only the cap is a complete
+declaration: `PageInput{MaxLimit: 10}` compiles to `DefaultLimit 10, MaxLimit
+10`. An **explicit** `DefaultLimit` above `MaxLimit`
+(`PageInput{DefaultLimit: 50, MaxLimit: 10}`) is still a `Compile` finding —
+that one is a contradiction in the declaration, not an omission.
 
 `Sort.Default` is kept in **wire form** (the json key with its optional `-`);
 `ResolveInputs` resolves it through `Keys` like a client-sent value.
@@ -350,12 +358,12 @@ no sort, no filter. Callers treat the two cases identically.
 | Finding | Cause |
 | --- | --- |
 | `Inputs.Sort enabled but no wire field carries col:"…,sort"` | `Sort.Enabled` with no sortable column |
-| `Inputs.Sort.Default %q is not a sortable column` | `Sort.Default` (after stripping `-`) is not in the sortable set |
+| `Inputs.Sort.Default "titel" is not a sortable column` | `Sort.Default` (after stripping `-`) is not in the sortable set |
 | `Inputs.Sort.Default set but Sort is not enabled` | a default sort without `Sort.Enabled` |
 | `Inputs.Filter enabled but no wire field carries col:"…,filter"` | `Filter.Enabled` with no filterable column |
 | `Inputs.Pagination limits must not be negative` | `DefaultLimit` or `MaxLimit` < 0 |
-| `Inputs.Pagination.DefaultLimit %d exceeds MaxLimit %d` | resolved default limit above the resolved max |
-| `Inputs.Pagination.Mode %q is not offset or cursor` | unknown `PageMode` |
+| `Inputs.Pagination.DefaultLimit 50 exceeds MaxLimit 10` | an **explicit** `DefaultLimit` above the resolved max (a zero one is capped instead) |
+| `Inputs.Pagination.Mode "keyset" is not offset or cursor` | unknown `PageMode` |
 
 
 ## Relations: `OneToMany` and `ManyToMany`

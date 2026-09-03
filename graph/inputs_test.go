@@ -131,3 +131,31 @@ func TestInputsViaSpec(t *testing.T) {
 		t.Fatalf("Spec.Inputs not applied: %+v %v", in, ok)
 	}
 }
+
+// TestInputsMaxLimitAloneCapsDefault: lowering only the cap is a complete
+// declaration. The package default (20) would exceed a MaxLimit of 10, so the
+// UNDECLARED default settles at the cap instead of failing compile; an
+// explicit default above the cap is still the contradiction it always was
+// (TestInputsFindings/"default over max").
+func TestInputsMaxLimitAloneCapsDefault(t *testing.T) {
+	g, err := inputsGraph(t, Inputs{Pagination: PageInput{MaxLimit: 10}})
+	if err != nil {
+		t.Fatalf("PageInput{MaxLimit: 10} must compile: %v", err)
+	}
+	in, ok := include.InputsOf(g.Resource("InBook"))
+	if !ok {
+		t.Fatal("declared inputs not reported")
+	}
+	if in.Page != (include.PageInputs{Mode: include.PageModeOffset, DefaultLimit: 10, MaxLimit: 10}) {
+		t.Errorf("Page = %+v, want DefaultLimit 10 / MaxLimit 10", in.Page)
+	}
+	// A cap ABOVE the package default leaves the default where it was.
+	g, err = inputsGraph(t, Inputs{Pagination: PageInput{MaxLimit: 60}})
+	if err != nil {
+		t.Fatalf("PageInput{MaxLimit: 60}: %v", err)
+	}
+	in, _ = include.InputsOf(g.Resource("InBook"))
+	if in.Page.DefaultLimit != include.DefaultPageLimit || in.Page.MaxLimit != 60 {
+		t.Errorf("Page = %+v, want %d / 60", in.Page, include.DefaultPageLimit)
+	}
+}

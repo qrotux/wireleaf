@@ -300,8 +300,13 @@ imported under an alias, since it shares the upstream package name.
 
 ```go
 import (
-	wfhuma "github.com/qrotux/wireleaf/adapters/huma"
+	"net/http"
+
 	humav2 "github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humago"
+
+	wfhuma "github.com/qrotux/wireleaf/adapters/huma"
+	"github.com/qrotux/wireleaf/include"
 )
 
 // New emits the graph's components and builds huma's config over them — the
@@ -360,8 +365,8 @@ next. Other pieces: `wfhuma.RegisterNode[W]` for a `Node[W]` body wrapper,
 | core | `.` | **nothing** | `include` (the engine), `graph` (the typed builder, `Compile`, `Loader`), `apidoc` (the doc core and IR), `jsonsplice`, plus the `graph/loadertest` and `apidoc/reflectortest` harnesses. |
 | reflector | `reflector` | `jsonschema-go` | `*reflector.Reflector` — the canonical `apidoc.Reflector`: Go struct → wireleaf IR, with the nullability policy, naming, and constraint mapping the whole stack agrees on. |
 | crosscheck | `apidoc/crosscheck` | `santhosh-tekuri/jsonschema/v6` | Test-only: compiles an emitted component set with a real draft-2020-12 validator and validates instances against it. |
-| huma adapter | `adapters/huma` | huma, reflector | `NewConfig` / `WithRegistry`, the `Registry` bridge, `Op` and its decorators, the envelope and `Node[W]` types, `BuildInto`. |
-| examples | `examples` | core, reflector, huma adapter | `basic`, `policies`, `costlimit`, `filter`, `huma` — runnable programs, `basic` is the quick-start. |
+| huma adapter | `adapters/huma` | huma, reflector | The `API` facade (`New`, `Attach`, `Bind` → `Bound[W]` with `Get`/`Hydrate`/`List`/`ListQuery`/`Page[W]`, `Register`), `NewConfig` / `WithRegistry`, the `Registry` bridge, `Op` and its decorators, the envelope and `Node[W]` types, `BuildInto`. |
+| examples | `examples` | core, reflector, huma adapter | `basic`, `policies`, `costlimit`, `filter`, `huma`, `declarative`, `modular` — runnable programs, `basic` is the quick-start. |
 
 An application on another documentation stack implements `apidoc.Reflector`
 itself and imports neither `reflector` nor `adapters/huma`.
@@ -412,6 +417,13 @@ produced by application code and documented by the schema you hand the edge.
 materialized document — an order-preserving, string-aware byte splice over a
 JSON object's top-level members, so key spellings, escapes and number
 formatting survive untouched.
+
+**List inputs** are enforced by `include.ResolveInputs`, never by the
+framework's parameter schema. A node's `graph.Inputs` declaration compiles into
+one `include.Inputs` value; `apidoc.InputParams` renders it as documentation
+and `ResolveInputs` judges the request against the same value, so an
+`?sort=`/`?limit=`/`?page=`/`?where=` the document does not describe is a
+`400`, whatever the adapter's own query binding accepted.
 
 **Harnesses.** `graph/loadertest` turns the fetcher contract above into
 subtests you add to your own suite (`RunFetchByParents`, `RunFetchIDs`; run
@@ -487,22 +499,31 @@ rows a `Bare()` fetcher really returns beyond its `EstimatedRows`.
 
 `include.DefaultOptions` is `{Limits: DefaultLimits}`: strict sort, strict args.
 
-## Filters (groundwork)
+## Filters
 
-The core carries a filter **model**, not a filter syntax. A wire field with
+The core carries a filter **model** and the two spellings that parse into it;
+generating the SQL stays the application's job. A wire field with
 `col:"…,filter"` is a filterable column, an edge with `.Filterable()` may be
 traversed — to-one as a join, reverse / to-many with a quantifier per hop
 (`any`, `all`, `none`) that the adapter renders as `EXISTS` / `NOT EXISTS`
-(deny-by-default, independent of `Includable()`, never with
-`Guard()`), and `include.ResolveFilter` checks a parser-produced
-`include.Filter` tree against the compiled graph, returning SQL-side names
-only. Parsing a JSON `where` body or a `?where[field][op]=` query string and
-generating the SQL (joins, `EXISTS`) are the application adapter's job; the
-resolved filter reaches its root fetcher through `include.QueryArgs.Where`.
+(deny-by-default, independent of `Includable()`, never with `Guard()`).
+
+`include.ParseFilterJSON` reads a JSON `where` node and
+`include.ParseFilterQuery` the `?where[field][op]=` bracket query string; both
+produce an `include.Filter` tree over client-side names. `include.ResolveFilter`
+then checks that tree against the compiled graph and returns SQL-side names
+only — so the parsers never decide what is filterable, and a hand-written
+parser can still feed `ResolveFilter` the same tree.
+`include.FilterOpsFor` reports the operators legal for a column type, which is
+what `apidoc`'s `FilterSyntax` documentation is generated from.
+
+Rendering the resolved tree as SQL (joins, `EXISTS`) is the application
+adapter's job; the resolved filter reaches its root fetcher through
+`include.QueryArgs.Where`.
 [`examples/filter/main.go`](examples/filter/main.go) is the reference for the
-two pieces an application owns — a JSON `where` parser and a SQL renderer over
-`ResolveFilter` — and [`examples/costlimit`](examples/costlimit/main.go) shows
-`include.FilterSubqueries` in a cost bucket.
+piece an application owns — a SQL renderer over `ResolveFilter`, fed by
+`ParseFilterJSON` — and [`examples/costlimit`](examples/costlimit/main.go)
+shows `include.FilterSubqueries` in a cost bucket.
 See [`docs/include.md` → Filters](docs/include.md#filters).
 
 ## Errors
