@@ -52,6 +52,16 @@ const (
 	// an empty root-level group, and a nil root node, still report "".
 	INVALID_FILTER Code = "INVALID_FILTER"
 
+	// INVALID_SORT is returned by ResolveInputs for a ?sort= key the node does
+	// not accept: sort not enabled, or the key (after an optional leading "-")
+	// is not one of Inputs.Sort.Keys. Path echoes the client's key.
+	INVALID_SORT Code = "INVALID_SORT"
+	// INVALID_PAGINATION is returned by ResolveInputs for a pagination value
+	// outside the node's contract: a limit above MaxLimit or negative, a
+	// negative page, ?page= in cursor mode, ?cursor= in offset mode. Path names
+	// the parameter and the value ("limit=500").
+	INVALID_PAGINATION Code = "INVALID_PAGINATION"
+
 	// FILTER_TOO_DEEP covers both filter size limits, as INCLUDE_TOO_DEEP does
 	// for includes: a condition path longer than Limits.MaxFilterDepth, a path
 	// crossing more than Limits.MaxFilterMany to-many hops, and a tree with

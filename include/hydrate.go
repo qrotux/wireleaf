@@ -32,6 +32,9 @@ type QueryArgs struct {
 	Sort  string
 	Page  int
 	Limit int
+	// Cursor is the OPAQUE continuation token in cursor mode ("" = first
+	// page); the fetcher that produced it decodes it. Zero in offset mode.
+	Cursor string
 }
 
 // RootFetcher is the endpoint's root-fetch closure. It owns the SQL (including
@@ -53,6 +56,10 @@ type QueryResult struct {
 	HasMore bool
 	Page    int
 	Limit   int
+	// NextCursor / PrevCursor are the tokens the ListFetcher returned in
+	// cursor mode; "" = none. Untouched by the offset facades.
+	NextCursor string
+	PrevCursor string
 }
 
 // ------------------------------------------------------------------ HydrateByQuery
