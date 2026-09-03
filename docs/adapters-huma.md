@@ -12,7 +12,7 @@ component set, one reflector.
 
 ## Overview
 
-The bridge has six functional layers:
+The bridge has seven functional layers:
 
 - **`Registry`** (registry.go) — implements `humav2.Registry` over a shared
   `*apidoc.Components` plus an `apidoc.Reflector`.
@@ -29,6 +29,9 @@ The bridge has six functional layers:
 - **`API`** (api.go, request.go) — the wiring object over graph + options +
   components + the huma API, with the `Include`/`Inputs` operation decorators,
   a guarded `Register`, and the middleware that fills `include.Request`.
+- **`Bound[W]`** (bound.go) — the per-resource facade `Bind` returns:
+  `Get`/`Hydrate`/`List` over the resource's `include.Hydrator`, with
+  `ListQuery` in and `Node[W]`/`Page[W]` out, engine errors mapped to huma.
 
 convert.go is the one IR → `humav2.Schema` converter every served schema goes
 through; build.go's `BuildInto` merges a component set into a huma document
@@ -133,7 +136,7 @@ Contracts and gotchas:
 - Any reflection/registration failure **panics** — a half-built document is
   worse than a loud stop at startup.
 
-## API (api.go, request.go)
+## API (api.go, request.go, bound.go)
 
 Everything above is a free function over something the application assembles by
 hand. `API` is the one object that owns the decisions which must agree with each
@@ -227,6 +230,114 @@ state (the authenticated viewer, the tenant) belongs in `Ctx.Env`. The context
 key is private, so nothing outside this package can substitute a forged
 snapshot; outside HTTP (tests, workers) there is simply no snapshot and the
 `Ctx` accessors tolerate `nil`.
+
+### Bound (bound.go)
+
+`Bind` ties **one** graph node to **one** wire type `W` and returns the value a
+handler closes over: the resource for the document decorators, the
+`include.Hydrator` for the engine calls, and the mapping of engine errors onto
+huma status errors.
+
+```go
+func Bind[W any](a *API, node string) *Bound[W]
+
+func (b *Bound[W]) Resource() include.Resource
+func (b *Bound[W]) Include() OpOpt   // a.Include(b.Resource())
+func (b *Bound[W]) Inputs() OpOpt    // a.Inputs(b.Resource())
+
+func (b *Bound[W]) Get(ctx context.Context, id, inc string) (Node[W], error)
+func (b *Bound[W]) Hydrate(ctx context.Context, doc any, inc string) (Node[W], error)
+func (b *Bound[W]) List(ctx context.Context, q ListQuery, fetch include.ListFetcher) (Page[W], error)
+```
+
+`Bind` is **wiring**, so every failure panics:
+
+- an unknown node panics inside `a.Graph().Resource(node)` (`graph: unknown
+  resource <name>`);
+- a node whose declared wire type is not `W` panics with `wire type mismatch
+  for node …: graph declares X, Bind asked for Y` — the check is
+  `apidoc.DerefType(reflect.TypeOf(node.WireSample())) == reflect.TypeFor[W]()`.
+
+On success it calls `RegisterNode[W](a.Components(), node)` **once** per the
+pair `(node, Node[W])` — the node name is also the component name — and records
+`Node[W]` in the API's bound set, which is what `Register`'s output-type guard
+reads. Hence the order `New → Attach → every Bind → Register`.
+
+The key is the **pair**, not `W` alone: a second `Bind` of `W` under a different
+node name still reaches `RegisterNode`, where apidoc refuses the remap
+(`node type … already registered as "X", cannot remap to "Y"`). Keying on `W`
+would skip registration and silently document that node's payloads as a `$ref`
+to the first component.
+
+`Get`, `Hydrate` and `List` each build a fresh
+`&include.Ctx{Context: ctx, Registry: a.Graph(), Request: requestOf(ctx)}`, so a
+Wire function, guard or fetcher sees the request snapshot the middleware stored
+(and tolerates its absence off the HTTP path).
+
+**Error mapping.** An `*include.Error` (found with `errors.As`) becomes
+`humav2.NewError(e.Status, e.Error())`: a bad `?include` / `?sort` / `?page` /
+`?where` is the resolver's 400, a missing document is `NOT_FOUND` 404. Any other
+error is returned **unchanged**, so an infrastructure fault stays a 500 and is
+not dressed up as a client mistake.
+
+**List parameters.** `ListQuery` is embedded anonymously in the operation's
+input struct:
+
+```go
+type ListQuery struct {
+    Include string `query:"include"`
+    Sort    string `query:"sort"`
+    Page    int    `query:"page"`
+    Cursor  string `query:"cursor"`
+    Limit   int    `query:"limit"`
+    Where   string `query:"where"`
+}
+```
+
+The tags carry **only the names**: the document comes from `Inputs()`, the
+validation from `include.ResolveInputs` inside `List` (see the note above — they
+share `include.Inputs`, but they are two mechanisms).
+
+**Where comes from the API's filter syntax**, not from a per-call choice:
+
+| `WithFilterSyntax` | source | parser |
+| --- | --- | --- |
+| `apidoc.FilterJSON` (default) | `q.Where` (empty → no filter) | `include.ParseFilterJSON` |
+| `apidoc.FilterBracket` | `where[…]` keys of the request snapshot | `include.ParseFilterQuery` |
+
+In bracket mode `q.Where` is unused, and a call with no snapshot on the context
+fails with `adapters/huma: bracket filter needs Attach …` — the keys can only be
+read off a real request.
+
+`List` then runs `ResolveInputs` and `Hydrator.Query(ctx, args, q.Include,
+fetch)` and assembles the page:
+
+```go
+type Page[W any] struct {
+    Data   []Node[W]             `json:"data"`
+    Mode   include.PageMode      `json:"-"`
+    Offset PagePagination        `json:"-"`
+    Cursor CursorPaginationTotal `json:"-"`
+}
+```
+
+Only the block of the resource's own mode is filled; the other stays zero.
+Cursor mode fills `Cursor` (nullable `nextCursor` / `prevCursor` from the
+fetcher's tokens, `hasNextPage` from `HasMore`, `hasPrevPage` from a non-empty
+previous token, `limit` from the resolved limit, and `totalDocs` only when the
+fetcher reported a total). Offset mode fills `Offset` with
+`totalPages = ceil(total/limit)` and `hasPrevPage = page > 1`.
+
+The pagination fields are `json:"-"` because the **application** owns its
+envelope: a handler picks the block of its mode and returns its own
+`{Data, Pagination}` body, which is what the envelope convention below derives
+a document for.
+
+> `Page[W]` is **not** usable as a huma response body — the envelope derivation
+> refuses a `{data}` struct whose second field is not `json:"pagination"`, and
+> the reflector then refuses the `Node[W]` it carries. Copy `Data` and the
+> pagination block of the resource's mode into the application's own envelope
+> struct.
 
 ## Operation layer (op.go)
 

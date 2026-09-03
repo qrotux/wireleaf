@@ -15,6 +15,7 @@ package huma
 import (
 	"context"
 	"fmt"
+	"maps"
 	"reflect"
 	"sort"
 	"strings"
@@ -40,8 +41,22 @@ type API struct {
 	huma   humav2.API
 
 	// bound records every Node[W] wrapper type a Bind registered, so Register
-	// can refuse an output type carrying an unbound wrapper.
+	// can refuse an output type carrying an unbound wrapper. Keyed by the
+	// wrapper type alone, because that is all checkBound sees on an output.
 	bound map[reflect.Type]bool
+
+	// bindings is Bind's idempotency key: the PAIR (node, Node[W]). Keying it
+	// on the wrapper alone would let a second node declaring the same wire type
+	// skip RegisterNode and silently document as the FIRST node's component;
+	// with the pair, the second Bind reaches RegisterNode and apidoc refuses
+	// the remap, loudly.
+	bindings map[bindKey]bool
+}
+
+// bindKey identifies one Bind: a graph node name plus the Node[W] wrapper type.
+type bindKey struct {
+	node    string
+	wrapper reflect.Type
 }
 
 // Option customizes New.
@@ -85,8 +100,9 @@ func New(g *graph.Graph, opts include.Options, title, version string, o ...Optio
 	cfgOpts := append([]ConfigOpt{WithRegistry(c)}, ao.cfg...)
 	return &API{
 		g: g, opts: opts, c: c, syntax: ao.syntax,
-		cfg:   NewConfig(title, version, cfgOpts...),
-		bound: map[reflect.Type]bool{},
+		cfg:      NewConfig(title, version, cfgOpts...),
+		bound:    map[reflect.Type]bool{},
+		bindings: map[bindKey]bool{},
 	}
 }
 
@@ -173,7 +189,55 @@ func (a *API) Inputs(res include.Resource) OpOpt {
 			op.Parameters = append(op.Parameters, hp)
 		}
 		errs(op)
+		// ListQuery carries BOTH page and cursor, because the resolver has to
+		// see the off-mode one to reject it (INVALID_PAGINATION). huma derives
+		// a query parameter from every tagged field, so without this the
+		// document of a cursor resource would advertise ?page and an offset
+		// one ?cursor — the very drift Inputs exists to prevent. The removal
+		// cannot happen here: huma appends the struct-derived parameters after
+		// the decorators run, so Register does it on the registered operation.
+		drop := "cursor"
+		if in.Page.Mode == include.PageModeCursor {
+			drop = "page"
+		}
+		if !declared[drop] {
+			m := maps.Clone(op.Metadata) // never write through a shared base's map
+			if m == nil {
+				m = map[string]any{}
+			}
+			prev, _ := m[metaDropQuery].([]string)
+			m[metaDropQuery] = append(append([]string{}, prev...), drop)
+			op.Metadata = m
+		}
 	}
+}
+
+// metaDropQuery is the operation-metadata key Inputs uses to tell Register
+// which huma-derived query parameters the resource does not accept. huma's
+// Operation.Metadata is yaml:"-", so it never reaches the document.
+const metaDropQuery = "wireleaf:drop-query-params"
+
+// dropQueryParams removes the parameters Inputs marked from the operation huma
+// registered. A hidden operation is not in the document and has nothing to
+// prune.
+func dropQueryParams(oapi *humav2.OpenAPI, op humav2.Operation) {
+	names, _ := op.Metadata[metaDropQuery].([]string)
+	if len(names) == 0 || op.Hidden {
+		return
+	}
+	drop := map[string]bool{}
+	for _, n := range names {
+		drop[n] = true
+	}
+	reg := operationAt(oapi, op.Method, op.Path)
+	kept := reg.Parameters[:0:0]
+	for _, p := range reg.Parameters {
+		if p != nil && p.In == "query" && drop[p.Name] {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	reg.Parameters = kept
 }
 
 // Register registers op with its decorators on the attached huma API.
@@ -182,7 +246,9 @@ func Register[I, O any](a *API, op humav2.Operation, handler func(context.Contex
 		panic("adapters/huma: Register before Attach")
 	}
 	a.checkBound(reflect.TypeFor[O]())
-	humav2.Register(a.huma, Op(op, opts...), handler)
+	final := Op(op, opts...)
+	humav2.Register(a.huma, final, handler)
+	dropQueryParams(a.huma.OpenAPI(), final)
 }
 
 // checkBound walks t and panics on a Node[W] wrapper no Bind registered:
