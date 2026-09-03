@@ -10,20 +10,6 @@ import (
 	"fmt"
 )
 
-// ListFetcher is the list-side fetcher a Hydrator.Query calls: it owns the
-// SQL, the offset or cursor select, and the continuation tokens.
-type ListFetcher func(ctx *Ctx, q QueryArgs) (ListPage, error)
-
-// ListPage is what a ListFetcher returns.
-type ListPage struct {
-	Docs    []any
-	Total   int // offset mode: total rows; cursor mode: 0 = unknown
-	HasMore bool
-	// NextCursor / PrevCursor are opaque tokens in cursor mode; "" = none.
-	NextCursor string
-	PrevCursor string
-}
-
 // Hydrator binds one root resource to a registry and options.
 type Hydrator struct {
 	root Resource
@@ -88,11 +74,7 @@ func (h *Hydrator) ByID(c *Ctx, id string, inc string) (json.RawMessage, error) 
 	default:
 		return nil, fmt.Errorf("include: FetchByIDs for node %q returned %d rows for one id", h.root.Name(), len(rows))
 	}
-	items, err := Materialize(plan, rows[:1], c)
-	if err != nil {
-		return nil, err
-	}
-	return items[0], nil
+	return materializeOne(plan, rows[0], c)
 }
 
 // Query runs the list pipeline: plan (400 before fetch), budget pre-check,
@@ -103,23 +85,7 @@ func (h *Hydrator) Query(c *Ctx, q QueryArgs, inc string, fetch ListFetcher) (Qu
 	if err != nil {
 		return QueryResult{}, err
 	}
-	if q.Limit > 0 && plan.MaxRows > 0 && plan.Cost > 0 && q.Limit > plan.MaxRows/plan.Cost {
-		return QueryResult{}, NewError(INCLUDE_BUDGET_EXCEEDED,
-			fmt.Sprintf("estimated %d rows per document × page %d exceeds budget %d", plan.Cost, q.Limit, plan.MaxRows))
-	}
-	page, err := fetch(c, q)
-	if err != nil {
-		return QueryResult{}, err
-	}
-	data, err := Materialize(plan, page.Docs, c)
-	if err != nil {
-		return QueryResult{}, err
-	}
-	return QueryResult{
-		Data: data, Total: page.Total, HasMore: page.HasMore,
-		Page: q.Page, Limit: q.Limit,
-		NextCursor: page.NextCursor, PrevCursor: page.PrevCursor,
-	}, nil
+	return runQuery(plan, q, fetch, c)
 }
 
 // Hydrate materializes an already-loaded root document (POST/PATCH replies).
@@ -129,9 +95,5 @@ func (h *Hydrator) Hydrate(c *Ctx, doc any, inc string) (json.RawMessage, error)
 	if err != nil {
 		return nil, err
 	}
-	items, err := Materialize(plan, []any{doc}, c)
-	if err != nil {
-		return nil, err
-	}
-	return items[0], nil
+	return materializeOne(plan, doc, c)
 }

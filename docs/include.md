@@ -421,6 +421,9 @@ registry when the caller left it nil.
   `HasMore`, echoing `q.Page` / `q.Limit`.
 - `Hydrate` is the POST/PATCH path: materializes an already-loaded document.
 
+Both families run one pipeline (`budgetCheck` → fetch → `Materialize`); a
+`RootFetcher` is adapted to a `ListFetcher` internally.
+
 ```go
 type ListFetcher func(ctx *Ctx, q QueryArgs) (ListPage, error)
 

@@ -62,15 +62,80 @@ type QueryResult struct {
 	PrevCursor string
 }
 
+// ListFetcher is the cursor-aware sibling of RootFetcher: it owns the SQL, the
+// offset or cursor select, and the continuation tokens.
+type ListFetcher func(ctx *Ctx, q QueryArgs) (ListPage, error)
+
+// ListPage is what a ListFetcher returns.
+type ListPage struct {
+	Docs    []any
+	Total   int // offset mode: total rows; cursor mode: 0 = unknown
+	HasMore bool
+	// NextCursor / PrevCursor are opaque tokens in cursor mode; "" = none.
+	NextCursor string
+	PrevCursor string
+}
+
+// ------------------------------------------------------------------ shared pipeline
+
+// budgetCheck refuses a page whose static row estimate would exceed the plan's
+// budget: the estimate is per document, so a known page size lets the facade
+// refuse before the root SQL runs. Division form so a hostile Limit cannot
+// overflow the product.
+func budgetCheck(plan *PlanNode, limit int) error {
+	if limit > 0 && plan.MaxRows > 0 && plan.Cost > 0 && limit > plan.MaxRows/plan.Cost {
+		return NewError(INCLUDE_BUDGET_EXCEEDED,
+			fmt.Sprintf("estimated %d rows per document × page %d exceeds budget %d", plan.Cost, limit, plan.MaxRows))
+	}
+	return nil
+}
+
+// runQuery is the list pipeline every facade shares: budget pre-check, fetch,
+// materialize, assemble. The plan is already resolved by the caller, which is
+// what keeps the 400 ahead of the fetch.
+func runQuery(plan *PlanNode, q QueryArgs, fetch ListFetcher, ctx *Ctx) (QueryResult, error) {
+	if err := budgetCheck(plan, q.Limit); err != nil {
+		return QueryResult{}, err
+	}
+	page, err := fetch(ctx, q)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	data, err := Materialize(plan, page.Docs, ctx)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	return QueryResult{
+		Data: data, Total: page.Total, HasMore: page.HasMore,
+		Page: q.Page, Limit: q.Limit,
+		NextCursor: page.NextCursor, PrevCursor: page.PrevCursor,
+	}, nil
+}
+
+// materializeOne materializes a single already-loaded root document.
+func materializeOne(plan *PlanNode, doc any, ctx *Ctx) (json.RawMessage, error) {
+	items, err := Materialize(plan, []any{doc}, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return items[0], nil
+}
+
+// listFetcherOf adapts the offset-era RootFetcher to the ListFetcher shape.
+func listFetcherOf(fetch RootFetcher) ListFetcher {
+	return func(ctx *Ctx, q QueryArgs) (ListPage, error) {
+		docs, total, hasMore, err := fetch(ctx, q)
+		if err != nil {
+			return ListPage{}, err
+		}
+		return ListPage{Docs: docs, Total: total, HasMore: hasMore}, nil
+	}
+}
+
 // ------------------------------------------------------------------ HydrateByQuery
 
-// HydrateByQuery is the list facade:
-//  1. ResolvePlan(root, inc, exc, opts) — 400-before-fetch: a resolve error
-//     returns before fetch is ever called.
-//  2. docs, total, hasMore, err = fetch(ctx, q)
-//  3. data, err = Materialize(plan, docs, ctx)
-//  4. return QueryResult{Data:data, Total:total, HasMore:hasMore, Page:q.Page,
-//     Limit:q.Limit} + plan.
+// HydrateByQuery is the list facade: ResolvePlan first, so a bad include
+// string returns before fetch is ever called, then the shared list pipeline.
 //
 // Offset-vs-cursor is the caller's concern: the RootFetcher encapsulates the
 // SQL and the cursor-select invariant. This facade is mode-agnostic.
@@ -83,52 +148,24 @@ func HydrateByQuery(
 	ctx *Ctx,
 	opts Options,
 ) (QueryResult, *PlanNode, error) {
-	// Step 1: 400-before-fetch.
 	plan, err := ResolvePlan(root, inc, exc, opts)
 	if err != nil {
 		return QueryResult{}, nil, err
 	}
-
-	// Step 1b: budget pre-check. The estimate is per document; a known page
-	// size lets us refuse before the root SQL runs. Division form so a hostile
-	// Limit cannot overflow the product.
-	if q.Limit > 0 && plan.MaxRows > 0 && plan.Cost > 0 && q.Limit > plan.MaxRows/plan.Cost {
-		return QueryResult{}, nil, NewError(INCLUDE_BUDGET_EXCEEDED,
-			fmt.Sprintf("estimated %d rows per document × page %d exceeds budget %d", plan.Cost, q.Limit, plan.MaxRows))
-	}
-
-	// Step 2: root fetch.
-	docs, total, hasMore, err := fetch(ctx, q)
+	res, err := runQuery(plan, q, listFetcherOf(fetch), ctx)
 	if err != nil {
 		return QueryResult{}, nil, err
 	}
-
-	// Step 3: materialize.
-	data, err := Materialize(plan, docs, ctx)
-	if err != nil {
-		return QueryResult{}, nil, err
-	}
-
-	// Step 4: assemble result.
-	return QueryResult{
-		Data:    data,
-		Total:   total,
-		HasMore: hasMore,
-		Page:    q.Page,
-		Limit:   q.Limit,
-	}, plan, nil
+	return res, plan, nil
 }
 
 // ------------------------------------------------------------------ HydrateByID
 
-// HydrateByID is the single-resource-by-id facade:
-//  1. ResolvePlan first (400-before-fetch).
-//  2. doc, err = fetch(ctx, id); propagate any non-nil error.
-//  3. doc == nil → return a *Error with Status 404 and Code NOT_FOUND.
-//  4. Materialize the single doc and return its one element + plan.
+// HydrateByID is the single-resource-by-id facade: ResolvePlan first
+// (400-before-fetch), then the caller's fetch; a nil doc is the 404 path.
 //
-// This facade is for detail endpoints. The RootFetcher closure owns the DB
-// call; the facade never touches a database.
+// This facade is for detail endpoints. The fetch closure owns the DB call; the
+// facade never touches a database.
 func HydrateByID(
 	root Resource,
 	id string,
@@ -138,12 +175,10 @@ func HydrateByID(
 	ctx *Ctx,
 	opts Options,
 ) (json.RawMessage, *PlanNode, error) {
-	// 400-before-fetch.
 	plan, err := ResolvePlan(root, inc, exc, opts)
 	if err != nil {
 		return nil, nil, err
 	}
-
 	doc, err := fetch(ctx, id)
 	if err != nil {
 		return nil, nil, err
@@ -151,21 +186,17 @@ func HydrateByID(
 	if doc == nil {
 		return nil, nil, notFound(id)
 	}
-
-	items, err := Materialize(plan, []any{doc}, ctx)
+	raw, err := materializeOne(plan, doc, ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	return items[0], plan, nil
+	return raw, plan, nil
 }
 
 // ------------------------------------------------------------------ HydrateEntity
 
-// HydrateEntity is the already-loaded-doc facade (POST/PATCH):
-//  1. ResolvePlan first.
-//  2. Materialize the single supplied doc (no root-fetch).
-//
-// Returns the materialized json.RawMessage + the resolved plan.
+// HydrateEntity is the already-loaded-doc facade (POST/PATCH): no root fetch,
+// the doc is in memory. Returns the materialized bytes and the resolved plan.
 func HydrateEntity(
 	root Resource,
 	doc any,
@@ -178,11 +209,11 @@ func HydrateEntity(
 	if err != nil {
 		return nil, nil, err
 	}
-	items, err := Materialize(plan, []any{doc}, ctx)
+	raw, err := materializeOne(plan, doc, ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	return items[0], plan, nil
+	return raw, plan, nil
 }
 
 // ------------------------------------------------------------------ HasInclude

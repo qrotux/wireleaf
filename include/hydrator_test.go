@@ -134,3 +134,32 @@ func TestHydratorQueryBudgetPreCheck(t *testing.T) {
 		t.Error("fetcher should run when the page fits the budget")
 	}
 }
+
+// TestHydratorQueryMatchesHydrateByQuery pins that the bound and unbound list
+// facades run the same pipeline: same bytes, same envelope.
+func TestHydratorQueryMatchesHydrateByQuery(t *testing.T) {
+	g := buildToyGraph()
+	rows := []any{
+		toyARow{id: "a1", name: "Alpha", childFK: "b1", selfFK: "a2"},
+		toyARow{id: "a2", name: "Beta", childFK: "b2", selfFK: ""},
+	}
+	root := RootFetcher(func(_ *Ctx, _ QueryArgs) ([]any, int, bool, error) { return rows, 2, false, nil })
+	list := ListFetcher(func(_ *Ctx, _ QueryArgs) (ListPage, error) { return ListPage{Docs: rows, Total: 2}, nil })
+	q := QueryArgs{Page: 1, Limit: 20}
+	want, _, err := HydrateByQuery(g.A, q, IncludeTree{"child": IncludeTree{}}, nil, root, &Ctx{Registry: g.Reg}, DefaultOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Bind(g.A, g.Reg, DefaultOptions).Query(&Ctx{Registry: g.Reg}, q, "child", list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Data) != len(want.Data) || got.Total != want.Total || got.HasMore != want.HasMore || got.Page != want.Page || got.Limit != want.Limit {
+		t.Fatalf("results differ: %+v vs %+v", got, want)
+	}
+	for i := range want.Data {
+		if string(got.Data[i]) != string(want.Data[i]) {
+			t.Fatalf("doc %d differs:\n%s\n%s", i, got.Data[i], want.Data[i])
+		}
+	}
+}
