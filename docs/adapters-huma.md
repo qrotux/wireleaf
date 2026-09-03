@@ -40,27 +40,53 @@ built *without* the bridge.
 ## Setup
 
 [`examples/huma/main.go`](../examples/huma/main.go) is the runnable version of
-this section: graph → components → `NewConfig` → two operations (`GET
-/books/{id}`, `GET /books` with a page envelope) served in-process, plus the
-document's `x-include-paths`.
+this section: two services on one `http.ServeMux` — Books (offset pagination,
+JSON `?where=`) and Authors (cursor pagination, bracket `?where[f][op]=`) —
+with `Get`/`List`/`Hydrate` handlers, a POST, and the document printed back.
+
+The order is **`New` → `Attach` → every `Bind` → `Register`**: `New` emits the
+graph's components and builds the huma config over them, `Attach` installs the
+middleware that fills `include.Request`, `Bind` ties one graph node to its wire
+type (registering the `Node[W]` wrapper component), and `Register` refuses an
+output carrying a wrapper no `Bind` wired.
 
 ```go
-c := apidoc.NewComponents()
-// register graph-derived components and node wrappers into c:
-wfhuma.RegisterNode[BookWire](c, "Book")
+a := wfhuma.New(g, include.DefaultOptions, "Books", "1.0.0")
+api := humago.New(mux, a.Config())   // any huma adapter
+a.Attach(api)
+book := wfhuma.Bind[BookWire](a, "Book")
 
-cfg := wfhuma.NewConfig("Books", "1.0.0", wfhuma.WithRegistry(c))
-api := humav2.NewAPI(cfg, adapter)
+wfhuma.Register(a, humav2.Operation{
+    OperationID: "get-book", Method: http.MethodGet, Path: "/books/{id}",
+}, func(ctx context.Context, in *getBookInput) (*getBookOutput, error) {
+    b, err := book.Get(ctx, in.ID, in.Include)
+    if err != nil {
+        return nil, err
+    }
+    return &getBookOutput{Body: BookEnvelope{Data: b}}, nil
+}, book.Include(), a.Errors(errBookNotFound))
 
-humav2.Register(api, wfhuma.Op(humav2.Operation{
-    OperationID: "get-book",
-    Method:      http.MethodGet,
-    Path:        "/books/{id}",
-},
-    wfhuma.IncludeParam(g.Resource("Book")),
-    wfhuma.Errors(wfhuma.ErrorDef{Status: 404, Code: "BOOK_NOT_FOUND", Message: "no such book"}),
-), handler)
+wfhuma.Register(a, humav2.Operation{
+    OperationID: "list-books", Method: http.MethodGet, Path: "/books",
+}, func(ctx context.Context, in *listBooksInput) (*listBooksOutput, error) {
+    page, err := book.List(ctx, in.ListQuery, listBooks(in.Q)) // include.ListFetcher
+    if err != nil {
+        return nil, err
+    }
+    return &listBooksOutput{Body: BookPageEnvelope{Data: page.Data, Pagination: page.Offset}}, nil
+}, book.Inputs())
 ```
+
+`listBooksInput` embeds `wfhuma.ListQuery` (the `include`/`sort`/`page`/
+`cursor`/`limit`/`where` block) and may add parameters of its own;
+`book.Inputs()` documents the list parameters from the node's `graph.Inputs`
+declaration, and `book.List` enforces the same declaration through
+`include.ResolveInputs`. `wfhuma.WithFilterSyntax(apidoc.FilterBracket)` on
+`New` switches `?where` to the bracket spelling.
+
+Two services can share one router: `Config()` returns the config by value, so
+moving `cfg.OpenAPIPath` / `cfg.DocsPath` aside before handing it to the router
+adapter keeps the two documents from colliding.
 
 Without `WithRegistry`, `NewConfig` bridges over a fresh
 `apidoc.NewComponents()` — only useful for a document with no graph-derived

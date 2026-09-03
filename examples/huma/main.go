@@ -1,24 +1,32 @@
 // Command huma wires a wireleaf graph into a huma v2 API through
-// adapters/huma: the graph's OpenAPI components become huma's schema registry,
-// handlers return engine-hydrated bytes through Node[W] wrappers, and the
-// ?include= parameter is documented from the graph itself.
+// adapters/huma's facade: wfhuma.New builds the graph's components and the
+// huma config together, Attach installs the request middleware, Bind ties one
+// graph node to its wire type, and Register documents an operation with the
+// SAME include.Options the planner enforces.
 //
-// The program builds the API on net/http's ServeMux, serves it in-process
-// with httptest, performs a handful of requests, and prints what the document
-// says about the parameters and the Book component — so it runs to completion
-// like the other examples instead of listening on a port.
+// The node itself declares what a list accepts — sort keys, filter fields and
+// pagination come from `graph.Inputs` over the wire struct's `col` tags — so
+// the ?sort/?limit/?where parameters in the document and the 400s a bad value
+// gets are two faces of one declaration.
+//
+// Two services share one http.ServeMux: Books (offset pagination, JSON
+// ?where=) and Authors (cursor pagination, bracket ?where[field][op]=). The
+// program serves them in-process with httptest, performs a handful of
+// requests, and prints what the document says — so it runs to completion like
+// the other examples instead of listening on a port.
 package main
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	humav2 "github.com/danielgtaylor/huma/v2"
@@ -28,7 +36,6 @@ import (
 	"github.com/qrotux/wireleaf/apidoc"
 	"github.com/qrotux/wireleaf/graph"
 	"github.com/qrotux/wireleaf/include"
-	"github.com/qrotux/wireleaf/reflector"
 )
 
 // ------------------------------------------------------------------ rows and wires
@@ -45,20 +52,40 @@ type authorRow struct {
 	Name string
 }
 
-// Wire types are what the reflector documents. Field annotations use the
-// swaggest tag set (description, title, format, minimum, enum, ...): they land
-// in the component's JSON Schema verbatim. Nullability is NOT a tag concern —
-// the policy decides it from the Go shape.
+// Wire types carry TWO tag sets with different jobs.
+//
+//   - `doc`, `example`, `minLength`, `minimum`, … are the reflector's
+//     documentation tags: they land in the component's JSON Schema verbatim.
+//     (`description:` is the equivalent spelling; `doc:` is huma's, and the
+//     reflector accepts both so an input struct and a wire struct can be
+//     annotated the same way.) Nullability is NOT a tag concern — the policy
+//     decides it from the Go shape.
+//   - `col` binds the field to its SQL-side column and grants ROLES:
+//     `col:"pub_year,sort,filter"` says the client may sort by ?sort=year and
+//     filter on year, and that both mean the `pub_year` column. Deny by
+//     default: a field with no role is neither sortable nor filterable, and a
+//     sort key or filter field can never name a column the node does not bind.
 type BookWire struct {
-	ID    string `json:"id" description:"Stable book identifier" example:"b1"`
-	Title string `json:"title" description:"Title as printed on the cover" minLength:"1"`
-	Year  int    `json:"year" description:"Year of first publication" minimum:"1450"`
+	ID         string `json:"id" col:"id" doc:"Stable book identifier" example:"b1"`
+	Title      string `json:"title" col:"title,sort,filter" doc:"Title as printed on the cover" minLength:"1"`
+	Year       int    `json:"year" col:"pub_year,sort,filter" doc:"Year of first publication" minimum:"1450"`
+	ViewedFrom string `json:"viewedFrom,omitempty" doc:"Address the request came from (X-Remote-Addr)"`
 }
 
 type AuthorWire struct {
-	ID   string `json:"id" description:"Stable author identifier" example:"a1"`
-	Name string `json:"name" description:"Display name, as commonly credited"`
+	ID   string `json:"id" col:"id" doc:"Stable author identifier" example:"a1"`
+	Name string `json:"name" col:"name,sort,filter" doc:"Display name, as commonly credited"`
 }
+
+// CreateBookBody is a request body: it goes through the bridge to the same
+// reflector, so its tags are read exactly like a wire type's.
+type CreateBookBody struct {
+	Title    string `json:"title" doc:"Title as printed on the cover" minLength:"1"`
+	Year     int    `json:"year" doc:"Year of first publication" minimum:"1450"`
+	AuthorID string `json:"authorId" doc:"Owning author" example:"a1"`
+}
+
+// ------------------------------------------------------------------ the store
 
 var books = map[string]bookRow{
 	"b1": {ID: "b1", Title: "The Hobbit", Year: 1937, AuthorID: "a1"},
@@ -80,79 +107,345 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
+func insertBook(body CreateBookBody) bookRow {
+	row := bookRow{
+		ID:       "b" + strconv.Itoa(len(books)+1),
+		Title:    body.Title,
+		Year:     body.Year,
+		AuthorID: body.AuthorID,
+	}
+	books[row.ID] = row
+	return row
+}
+
 // ------------------------------------------------------------------ the graph
 
-func buildGraph() (*graph.Graph, include.Resource) {
+// Book is the declarative form of a node: the facts, the edges, the list
+// inputs and the fetchers in one literal. graph.Add replays it through the
+// chained builder, so it is indistinguishable from a hand-chained node.
+var Book = graph.Spec[bookRow, BookWire]{
+	Name: "Book",
+	Slug: "book",
+	// The Ctx is the request in engine terms: Header reads what the middleware
+	// snapshotted, so a wire field can depend on the caller.
+	Wire: func(r bookRow, c *include.Ctx) BookWire {
+		return BookWire{ID: r.ID, Title: r.Title, Year: r.Year, ViewedFrom: c.Header("X-Remote-Addr")}
+	},
+	PrimaryKey: func(r bookRow) string { return r.ID },
+	Edges: []graph.EdgeSpec[bookRow]{
+		{Key: "author", Kind: graph.ToOne[AuthorWire](), ForeignKey: func(r bookRow) string { return r.AuthorID }, Inverse: "books", Includable: true},
+	},
+	// Offset pagination, a default sort, and filtering over the `filter`
+	// columns. apidoc.InputParams documents exactly this and
+	// include.ResolveInputs enforces exactly this — they cannot drift.
+	Inputs: &graph.Inputs{
+		Sort:       graph.SortInput{Enabled: true, Default: "title"},
+		Filter:     graph.FilterInput{Enabled: true},
+		Pagination: graph.PageInput{DefaultLimit: 2, MaxLimit: 50},
+	},
+	FetchIDs:     fetchBooksByID,
+	FetchParents: fetchBooksByAuthor,
+}
+
+// Author pages by CURSOR: the client sends ?cursor= and never ?page=, and the
+// document says so — the resolver rejects the off-mode parameter with
+// INVALID_PAGINATION.
+var Author = graph.Spec[authorRow, AuthorWire]{
+	Name:       "Author",
+	Slug:       "author",
+	Wire:       func(r authorRow, _ *include.Ctx) AuthorWire { return AuthorWire{ID: r.ID, Name: r.Name} },
+	PrimaryKey: func(r authorRow) string { return r.ID },
+	Edges: []graph.EdgeSpec[authorRow]{
+		{Key: "books", Kind: graph.Reverse[BookWire]("authorId"), Inverse: "author", Limit: 10, Includable: true},
+	},
+	Inputs: &graph.Inputs{
+		Filter:     graph.FilterInput{Enabled: true},
+		Pagination: graph.PageInput{Mode: include.PageModeCursor, DefaultLimit: 1, MaxLimit: 10},
+	},
+	FetchIDs: fetchAuthorsByID,
+}
+
+func fetchBooksByID(_ *include.Ctx, ids []string) ([]bookRow, error) {
+	out := make([]bookRow, 0, len(ids))
+	for _, id := range ids {
+		if bk, ok := books[id]; ok {
+			out = append(out, bk)
+		}
+	}
+	return out, nil
+}
+
+func fetchAuthorsByID(_ *include.Ctx, ids []string) ([]authorRow, error) {
+	out := make([]authorRow, 0, len(ids))
+	for _, id := range ids {
+		if a, ok := authors[id]; ok {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+// fetchBooksByAuthor is the reverse edge's loader: the books of every parent
+// author in one call, honouring the edge's top-N limit.
+func fetchBooksByAuthor(_ *include.Ctx, parentIDs []string, q include.EdgeQuery) (map[string]graph.ParentRows[bookRow], error) {
+	out := make(map[string]graph.ParentRows[bookRow], len(parentIDs))
+	for _, pid := range parentIDs {
+		var rows []bookRow
+		for _, id := range sortedKeys(books) {
+			if bk := books[id]; bk.AuthorID == pid {
+				rows = append(rows, bk)
+			}
+		}
+		hasMore := q.Limit > 0 && len(rows) > q.Limit
+		if hasMore {
+			rows = rows[:q.Limit]
+		}
+		out[pid] = graph.ParentRows[bookRow]{Rows: rows, HasMore: hasMore}
+	}
+	return out, nil
+}
+
+func buildGraph() *graph.Graph {
 	b := graph.NewBuilder()
-
-	book := graph.Node[bookRow, BookWire](b, "Book").
-		Slug("book").
-		Wire(func(r bookRow, _ *include.Ctx) BookWire { return BookWire{ID: r.ID, Title: r.Title, Year: r.Year} }).
-		PrimaryKey(func(r bookRow) string { return r.ID })
-	author := graph.Node[authorRow, AuthorWire](b, "Author").
-		Slug("author").
-		Wire(func(r authorRow, _ *include.Ctx) AuthorWire { return AuthorWire{ID: r.ID, Name: r.Name} }).
-		PrimaryKey(func(r authorRow) string { return r.ID })
-
-	book.Edge("author", graph.ToOne[AuthorWire]()).
-		ForeignKey(func(r bookRow) string { return r.AuthorID }).
-		Inverse("books").
-		Includable()
-	author.Edge("books", graph.Reverse[BookWire]("authorId")).
-		Inverse("author").
-		Limit(10).
-		Includable()
-
-	graph.FetchIDs(b, author, func(_ *include.Ctx, ids []string) ([]authorRow, error) {
-		out := make([]authorRow, 0, len(ids))
-		for _, id := range ids {
-			if a, ok := authors[id]; ok {
-				out = append(out, a)
-			}
-		}
-		return out, nil
-	})
-	graph.FetchIDs(b, book, func(_ *include.Ctx, ids []string) ([]bookRow, error) {
-		out := make([]bookRow, 0, len(ids))
-		for _, id := range ids {
-			if bk, ok := books[id]; ok {
-				out = append(out, bk)
-			}
-		}
-		return out, nil
-	})
-	graph.FetchParents(b, book, func(_ *include.Ctx, parentIDs []string, q include.EdgeQuery) (map[string]graph.ParentRows[bookRow], error) {
-		out := make(map[string]graph.ParentRows[bookRow], len(parentIDs))
-		for _, pid := range parentIDs {
-			var rows []bookRow
-			for _, id := range sortedKeys(books) {
-				if bk := books[id]; bk.AuthorID == pid {
-					rows = append(rows, bk)
-				}
-			}
-			hasMore := q.Limit > 0 && len(rows) > q.Limit
-			if hasMore {
-				rows = rows[:q.Limit]
-			}
-			out[pid] = graph.ParentRows[bookRow]{Rows: rows, HasMore: hasMore}
-		}
-		return out, nil
-	})
-
+	book := graph.Add(b, Book)
+	author := graph.Add(b, Author)
 	b.Root(book)
+	b.Root(author)
 	g, err := b.Compile()
 	if err != nil {
 		panic(err)
 	}
-	return g, g.Resource("Book")
+	return g
 }
+
+// ------------------------------------------------------------------ the filter, in Go
+
+// This example has no database, so it evaluates the resolved filter in memory.
+// What arrives is include.ResolvedFilter: every client name is already
+// resolved to its SQL side (Column.Col), every operator already checked
+// against the column's Go type, and the tree already within the configured
+// limits — a real adapter would print SQL from the same walk (see
+// examples/filter).
+func matches(f include.ResolvedFilter, cols map[string]any) bool {
+	switch t := f.(type) {
+	case nil:
+		return true
+	case include.ResolvedAnd:
+		for _, m := range t {
+			if !matches(m, cols) {
+				return false
+			}
+		}
+		return true
+	case include.ResolvedOr:
+		for _, m := range t {
+			if matches(m, cols) {
+				return true
+			}
+		}
+		return len(t) == 0
+	case include.ResolvedCond:
+		return condHolds(t, cols)
+	default:
+		return false
+	}
+}
+
+func condHolds(c include.ResolvedCond, cols map[string]any) bool {
+	// Hops are the traversed edges of a nested condition; this store is flat,
+	// so only root-level columns are evaluated.
+	if len(c.Hops) > 0 {
+		return true
+	}
+	got, ok := cols[c.Column.Col]
+	if !ok {
+		return true
+	}
+	switch c.Op {
+	case include.OpIn, include.OpNin:
+		list, _ := c.Value.([]any)
+		found := false
+		for _, v := range list {
+			if n, ok := compare(got, v); ok && n == 0 {
+				found = true
+				break
+			}
+		}
+		return found == (c.Op == include.OpIn)
+	}
+	n, ok := compare(got, c.Value)
+	if !ok {
+		return false
+	}
+	switch c.Op {
+	case include.OpEq:
+		return n == 0
+	case include.OpNe:
+		return n != 0
+	case include.OpLt:
+		return n < 0
+	case include.OpLte:
+		return n <= 0
+	case include.OpGt:
+		return n > 0
+	case include.OpGte:
+		return n >= 0
+	}
+	return false
+}
+
+// compare orders two filter values. Values reach the engine as the PARSER
+// produced them — float64 from the JSON syntax, column-typed from the bracket
+// syntax — and the engine deliberately never coerces them, so the comparison
+// normalizes numbers here.
+func compare(a, b any) (int, bool) {
+	an, aok := asNumber(a)
+	bn, bok := asNumber(b)
+	if aok && bok {
+		switch {
+		case an < bn:
+			return -1, true
+		case an > bn:
+			return 1, true
+		}
+		return 0, true
+	}
+	as, aok := a.(string)
+	bs, bok := b.(string)
+	if aok && bok {
+		return strings.Compare(as, bs), true
+	}
+	return 0, false
+}
+
+func asNumber(v any) (float64, bool) {
+	switch n := v.(type) {
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case float64:
+		return n, true
+	}
+	return 0, false
+}
+
+func bookCols(r bookRow) map[string]any {
+	return map[string]any{"id": r.ID, "title": r.Title, "pub_year": r.Year}
+}
+
+func authorCols(r authorRow) map[string]any {
+	return map[string]any{"id": r.ID, "name": r.Name}
+}
+
+// ------------------------------------------------------------------ the fetchers
+
+// listBooks is the offset-mode list fetcher. QueryArgs is what
+// include.ResolveInputs made of the query string: Sort is already the SQL
+// column with its direction prefix, Limit is already clamped to the node's
+// MaxLimit, Where is the resolved tree. `q` is an EXTRA parameter this
+// operation declares on its own input struct, outside the node's contract.
+func listBooks(q string) include.ListFetcher {
+	return func(_ *include.Ctx, args include.QueryArgs) (include.ListPage, error) {
+		rows := make([]bookRow, 0, len(books))
+		for _, id := range sortedKeys(books) {
+			r := books[id]
+			if q != "" && !strings.Contains(strings.ToLower(r.Title), strings.ToLower(q)) {
+				continue
+			}
+			if !matches(args.Where, bookCols(r)) {
+				continue
+			}
+			rows = append(rows, r)
+		}
+		switch strings.TrimPrefix(args.Sort, "-") {
+		case "pub_year":
+			sort.SliceStable(rows, func(i, j int) bool { return rows[i].Year < rows[j].Year })
+		default:
+			sort.SliceStable(rows, func(i, j int) bool { return rows[i].Title < rows[j].Title })
+		}
+		if strings.HasPrefix(args.Sort, "-") {
+			slices.Reverse(rows)
+		}
+		start := min((args.Page-1)*args.Limit, len(rows))
+		end := min(start+args.Limit, len(rows))
+		docs := make([]any, 0, end-start)
+		for _, r := range rows[start:end] {
+			docs = append(docs, r)
+		}
+		return include.ListPage{Docs: docs, Total: len(rows), HasMore: end < len(rows)}, nil
+	}
+}
+
+// listAuthors is the cursor-mode list fetcher. The cursor is OPAQUE to the
+// engine: whoever produced it decodes it, and here it is simply the last
+// author id of the previous page.
+func listAuthors(_ *include.Ctx, args include.QueryArgs) (include.ListPage, error) {
+	var rows []authorRow
+	for _, id := range sortedKeys(authors) {
+		r := authors[id]
+		if args.Cursor != "" && id <= args.Cursor {
+			continue
+		}
+		if !matches(args.Where, authorCols(r)) {
+			continue
+		}
+		rows = append(rows, r)
+	}
+	page := include.ListPage{}
+	if len(rows) > args.Limit {
+		rows, page.HasMore = rows[:args.Limit], true
+	}
+	for _, r := range rows {
+		page.Docs = append(page.Docs, r)
+	}
+	if page.HasMore && len(rows) > 0 {
+		page.NextCursor = rows[len(rows)-1].ID
+	}
+	return page, nil
+}
+
+// ------------------------------------------------------------------ the catalogue
+
+// An ErrorDef is declared once and used twice: Errors(def) puts it in the
+// document, def.Err(detail) returns the matching runtime error — so the
+// responses cannot drift from what the document promises.
+var (
+	errBookNotFound  = wfhuma.ErrorDef{Status: 404, Code: "BOOK_NOT_FOUND", Message: "no such book"}
+	errAuthorUnknown = wfhuma.ErrorDef{Status: 409, Code: "AUTHOR_UNKNOWN", Message: "no such author"}
+)
 
 // ------------------------------------------------------------------ HTTP bodies
 
+// Input structs are huma's: path/query parameters use huma's tag set.
+// wfhuma.ListQuery is the embedded list block — its tags carry only the NAMES,
+// because the document comes from Inputs() and the validation from
+// include.ResolveInputs; huma never sees a constraint it could disagree with.
+type getBookInput struct {
+	ID string `path:"id" doc:"Book identifier" example:"b1"`
+	// Include() declares this parameter first (with x-include-paths); huma
+	// sees the name is taken, keeps that declaration, and still binds here.
+	Include string `query:"include"`
+}
+
+type listBooksInput struct {
+	wfhuma.ListQuery
+	Q string `query:"q" minLength:"2" example:"hobbit" doc:"Case-insensitive substring match on the title"`
+}
+
+type createBookInput struct {
+	Include string `query:"include"`
+	Body    CreateBookBody
+}
+
+type listAuthorsInput struct{ wfhuma.ListQuery }
+
 // The envelope convention: a struct whose first field is `data` typed as a
 // Node wrapper (or a slice of one) documents as {data: $ref Book}, not as its
-// Go field shape. Node[W] carries the engine's bytes verbatim.
-
+// Go field shape. Node[W] carries the engine's hydrated bytes verbatim.
+//
+// wfhuma.Page[W] is NOT a huma body — copy its Data and the pagination block
+// of the resource's mode into the application's own envelope.
 type BookEnvelope struct {
 	Data wfhuma.Node[BookWire] `json:"data"`
 }
@@ -162,213 +455,190 @@ type BookPageEnvelope struct {
 	Pagination wfhuma.PagePagination   `json:"pagination"`
 }
 
-// Input structs are huma's: path/query parameters are documented with huma's
-// own tag set (doc, default, minimum, maximum, enum, example, ...), which is a
-// DIFFERENT dialect from the wire types above — `doc:` here, `description:`
-// there. A body field would go back through the bridge to the reflector.
-type getBookInput struct {
-	ID string `path:"id" doc:"Book identifier" example:"b1"`
-	// Op's IncludeParam declares this parameter first (with x-include-paths);
-	// huma sees the name is taken, keeps that declaration, and still binds
-	// the query value here.
-	Include string `query:"include"`
+type AuthorPageEnvelope struct {
+	Data       []wfhuma.Node[AuthorWire]    `json:"data"`
+	Pagination wfhuma.CursorPaginationTotal `json:"pagination"`
 }
 
-type getBookOutput struct {
-	Body BookEnvelope
+type getBookOutput struct{ Body BookEnvelope }
+
+type listBooksOutput struct{ Body BookPageEnvelope }
+
+type createBookOutput struct {
+	Status int
+	Body   BookEnvelope
 }
 
-type listBooksInput struct {
-	Include string `query:"include"`
-	Page    int    `query:"page" default:"1" minimum:"1" doc:"Page number, 1-based"`
-	Limit   int    `query:"limit" default:"2" minimum:"1" maximum:"50" doc:"Books per page"`
-	Sort    string `query:"sort" default:"title" enum:"title,-title,year,-year" doc:"Sort key; a leading '-' sorts descending"`
-	Q       string `query:"q" minLength:"2" example:"hobbit" doc:"Case-insensitive substring match on the title"`
-}
-
-type listBooksOutput struct {
-	Body BookPageEnvelope
-}
-
-// asHumaError maps the engine's structured *include.Error (Code, Path, Status)
-// onto huma's status error; anything else is a 500.
-func asHumaError(err error) error {
-	var ie *include.Error
-	if errors.As(err, &ie) {
-		return humav2.NewError(ie.Status, ie.Error())
-	}
-	return err
-}
-
-// selectBooks applies the list query: substring filter on the title, then the
-// declared sort key. huma has already validated q and sort against the tags.
-func selectBooks(q, sortKey string) []bookRow {
-	rows := make([]bookRow, 0, len(books))
-	for _, id := range sortedKeys(books) {
-		if r := books[id]; q == "" || strings.Contains(strings.ToLower(r.Title), strings.ToLower(q)) {
-			rows = append(rows, r)
-		}
-	}
-	desc := strings.HasPrefix(sortKey, "-")
-	switch strings.TrimPrefix(sortKey, "-") {
-	case "year":
-		sort.SliceStable(rows, func(i, j int) bool { return rows[i].Year < rows[j].Year })
-	default:
-		sort.SliceStable(rows, func(i, j int) bool { return rows[i].Title < rows[j].Title })
-	}
-	if desc {
-		slices.Reverse(rows)
-	}
-	return rows
-}
+type listAuthorsOutput struct{ Body AuthorPageEnvelope }
 
 // ------------------------------------------------------------------ wiring
 
-func buildAPI() (*http.ServeMux, humav2.Config) {
-	g, bookRes := buildGraph()
-
-	// 1. One shared component set: the graph's components go in first, then
-	//    the Node wrappers are bound to their component names.
-	c := apidoc.NewComponents()
-	frags, err := apidoc.EmitComponents(&reflector.Reflector{}, g.Reachable(bookRes))
-	if err != nil {
-		panic(err)
-	}
-	for _, name := range sortedKeys(frags) {
-		c.Add(name, frags[name])
-	}
-	wfhuma.RegisterNode[BookWire](c, "Book")
-	wfhuma.RegisterNode[AuthorWire](c, "Author")
-
-	// 2. The document's registry IS the bridge over c. Everything huma
-	//    reflects on its own (inputs, envelopes) lands in the same set.
-	cfg := wfhuma.NewConfig("Books", "1.0.0", wfhuma.WithRegistry(c))
+func buildAPI() (*http.ServeMux, *wfhuma.API, *wfhuma.API) {
+	g := buildGraph()
 	mux := http.NewServeMux()
-	api := humago.New(mux, cfg)
 
-	opts := include.DefaultOptions
-	notFound := wfhuma.ErrorDef{Status: 404, Code: "BOOK_NOT_FOUND", Message: "no such book"}
+	// New → Attach → Bind → Register. New emits the graph's components and
+	// builds the huma config over them; Attach installs the middleware that
+	// snapshots the request for Ctx.Header; Bind ties the node to its wire
+	// type and registers the Node[W] wrapper component.
+	booksSvc := wfhuma.New(g, include.DefaultOptions, "Books", "1.0.0")
+	booksAPI := humago.New(mux, booksSvc.Config())
+	booksSvc.Attach(booksAPI)
+	book := wfhuma.Bind[BookWire](booksSvc, "Book")
 
-	// 3. GET /books/{id}: one hydrated entity.
-	humav2.Register(api, wfhuma.Op(humav2.Operation{
-		OperationID: "get-book",
-		Method:      http.MethodGet,
-		Path:        "/books/{id}",
-		Summary:     "Get a book",
-	},
-		wfhuma.IncludeParamWithLimits(bookRes, opts.Limits),
-		wfhuma.Errors(notFound),
-	), func(ctx context.Context, in *getBookInput) (*getBookOutput, error) {
-		inc, err := include.ParseInclude(in.Include)
+	wfhuma.Register(booksSvc, humav2.Operation{
+		OperationID: "get-book", Method: http.MethodGet, Path: "/books/{id}", Summary: "Get a book",
+	}, func(ctx context.Context, in *getBookInput) (*getBookOutput, error) {
+		b, err := book.Get(ctx, in.ID, in.Include)
 		if err != nil {
-			return nil, asHumaError(err)
+			return nil, err
 		}
-		raw, _, err := include.HydrateByID(bookRes, in.ID, inc, nil,
-			func(_ *include.Ctx, id string) (any, error) {
-				bk, ok := books[id]
-				if !ok {
-					return nil, nil // → include.NOT_FOUND, status 404
-				}
-				return bk, nil
-			},
-			&include.Ctx{Context: ctx, Registry: g}, opts)
-		if err != nil {
-			return nil, asHumaError(err)
-		}
-		return &getBookOutput{Body: BookEnvelope{Data: wfhuma.NodeOf[BookWire](raw)}}, nil
-	})
+		return &getBookOutput{Body: BookEnvelope{Data: b}}, nil
+	}, book.Include(), booksSvc.Errors(errBookNotFound))
 
-	// 4. GET /books: a page of hydrated entities in the PagePagination envelope.
-	humav2.Register(api, wfhuma.Op(humav2.Operation{
-		OperationID: "list-books",
-		Method:      http.MethodGet,
-		Path:        "/books",
-		Summary:     "List books",
-	},
-		wfhuma.IncludeParamWithLimits(bookRes, opts.Limits),
-	), func(ctx context.Context, in *listBooksInput) (*listBooksOutput, error) {
-		inc, err := include.ParseInclude(in.Include)
+	wfhuma.Register(booksSvc, humav2.Operation{
+		OperationID: "list-books", Method: http.MethodGet, Path: "/books", Summary: "List books",
+	}, func(ctx context.Context, in *listBooksInput) (*listBooksOutput, error) {
+		page, err := book.List(ctx, in.ListQuery, listBooks(in.Q))
 		if err != nil {
-			return nil, asHumaError(err)
+			return nil, err
 		}
-		fetch := func(_ *include.Ctx, q include.QueryArgs) ([]any, int, bool, error) {
-			rows := selectBooks(in.Q, in.Sort)
-			start := min((q.Page-1)*q.Limit, len(rows))
-			end := min(start+q.Limit, len(rows))
-			docs := make([]any, 0, end-start)
-			for _, r := range rows[start:end] {
-				docs = append(docs, r)
-			}
-			return docs, len(rows), end < len(rows), nil
-		}
-		res, _, err := include.HydrateByQuery(bookRes, include.QueryArgs{Page: in.Page, Limit: in.Limit}, inc, nil, fetch,
-			&include.Ctx{Context: ctx, Registry: g}, opts)
-		if err != nil {
-			return nil, asHumaError(err)
-		}
-		data := make([]wfhuma.Node[BookWire], len(res.Data))
-		for i, raw := range res.Data {
-			data[i] = wfhuma.NodeOf[BookWire](raw)
-		}
-		totalPages := (res.Total + in.Limit - 1) / in.Limit
-		return &listBooksOutput{Body: BookPageEnvelope{
-			Data: data,
-			Pagination: wfhuma.PagePagination{
-				Page: in.Page, TotalPages: totalPages, TotalDocs: res.Total,
-				HasNextPage: res.HasMore, HasPrevPage: in.Page > 1,
-			},
-		}}, nil
-	})
+		return &listBooksOutput{Body: BookPageEnvelope{Data: page.Data, Pagination: page.Offset}}, nil
+	}, book.Inputs())
 
-	return mux, cfg
+	wfhuma.Register(booksSvc, humav2.Operation{
+		OperationID: "create-book", Method: http.MethodPost, Path: "/books", Summary: "Create a book",
+		DefaultStatus: http.StatusCreated,
+	}, func(ctx context.Context, in *createBookInput) (*createBookOutput, error) {
+		if _, ok := authors[in.Body.AuthorID]; !ok {
+			return nil, errAuthorUnknown.Err(in.Body.AuthorID)
+		}
+		b, err := book.Hydrate(ctx, insertBook(in.Body), in.Include)
+		if err != nil {
+			return nil, err
+		}
+		return &createBookOutput{Status: http.StatusCreated, Body: BookEnvelope{Data: b}}, nil
+	}, book.Include(), booksSvc.Errors(errAuthorUnknown))
+
+	// A second service on the SAME mux: cursor pagination and the bracket
+	// filter syntax. The config is taken by value and its document paths moved
+	// aside, so the two documents do not collide on one router.
+	authorsSvc := wfhuma.New(g, include.DefaultOptions, "Authors", "1.0.0", wfhuma.WithFilterSyntax(apidoc.FilterBracket))
+	cfg := authorsSvc.Config()
+	cfg.OpenAPIPath = "/authors-openapi"
+	cfg.DocsPath = "/authors-docs"
+	authorsAPI := humago.New(mux, cfg)
+	authorsSvc.Attach(authorsAPI)
+	author := wfhuma.Bind[AuthorWire](authorsSvc, "Author")
+
+	wfhuma.Register(authorsSvc, humav2.Operation{
+		OperationID: "list-authors", Method: http.MethodGet, Path: "/authors", Summary: "List authors",
+	}, func(ctx context.Context, in *listAuthorsInput) (*listAuthorsOutput, error) {
+		page, err := author.List(ctx, in.ListQuery, listAuthors)
+		if err != nil {
+			return nil, err
+		}
+		return &listAuthorsOutput{Body: AuthorPageEnvelope{Data: page.Data, Pagination: page.Cursor}}, nil
+	}, author.Inputs())
+
+	return mux, booksSvc, authorsSvc
 }
 
 // ------------------------------------------------------------------ main
 
 func main() {
-	mux, cfg := buildAPI()
+	mux, booksSvc, authorsSvc := buildAPI()
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
+
+	do := func(req *http.Request) []byte {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			panic(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		label := req.Method + " " + req.URL.RequestURI()
+		fmt.Printf("%-62s %d %s\n", label, resp.StatusCode, body)
+		return body
+	}
+	get := func(path string) []byte {
+		req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+		if err != nil {
+			panic(err)
+		}
+		return do(req)
+	}
 
 	for _, path := range []string{
 		"/books/b1?include=author",
 		"/books/b1?include=author.books",
 		"/books?include=author&page=2",
 		"/books?q=the&sort=-year&limit=5",
-		"/books?sort=isbn",
+		"/books?sort=-year&limit=5&where=" + url.QueryEscape(`{"year":{"gte":1950}}`),
+		"/books?sort=isbn", // 400 INVALID_SORT: isbn is not a `sort` column
 		"/books/nope",
 		"/books/b1?include=ghost",
 	} {
-		resp, err := http.Get(srv.URL + path)
-		if err != nil {
-			panic(err)
-		}
-		body, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		fmt.Printf("GET %-32s %d %s\n", path, resp.StatusCode, body)
+		get(path)
 	}
 
-	// The served document: the include parameter carries every legal path,
-	// the other parameters carry their huma tags, and the response bodies
-	// $ref the graph-derived components whose properties carry the wire tags.
-	oapi := cfg.OpenAPI
-	get := oapi.Paths["/books/{id}"].Get
-	for _, p := range get.Parameters {
-		if p.Name == "include" {
-			fmt.Println("x-include-paths:", p.Schema.Extensions[apidoc.XIncludePaths])
-		}
+	// The Wire function reads the request header off the include.Ctx, so the
+	// same document gains a viewedFrom field only on this request.
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/books/b1", nil)
+	if err != nil {
+		panic(err)
 	}
-	fmt.Println("GET /books parameters:")
-	for _, p := range oapi.Paths["/books"].Get.Parameters {
+	req.Header.Set("X-Remote-Addr", "203.0.113.7")
+	do(req)
+
+	post, err := http.NewRequest(http.MethodPost, srv.URL+"/books?include=author",
+		strings.NewReader(`{"title":"Children of Dune","year":1976,"authorId":"a2"}`))
+	if err != nil {
+		panic(err)
+	}
+	post.Header.Set("Content-Type", "application/json")
+	do(post)
+
+	// Cursor mode: the first page carries nextCursor, and the follow-up
+	// resumes from it. ?page= on this resource is INVALID_PAGINATION.
+	first := get("/authors?limit=1")
+	var page struct {
+		Pagination struct {
+			NextCursor string `json:"nextCursor"`
+		} `json:"pagination"`
+	}
+	if err := json.Unmarshal(first, &page); err != nil {
+		panic(err)
+	}
+	get("/authors?limit=1&cursor=" + url.QueryEscape(page.Pagination.NextCursor))
+	get("/authors?" + url.QueryEscape("where[name][eq]") + "=" + url.QueryEscape("Frank Herbert"))
+	get("/authors?page=2")
+
+	// The served document. Every list parameter below was written by
+	// Inputs() from the node's declaration: the sort enum is the node's
+	// sortable columns, the limit maximum its MaxLimit, and the bracket
+	// ?where is a deepObject.
+	printParams("GET /books", booksSvc.Config().OpenAPI, "/books")
+	printParams("GET /authors", authorsSvc.Config().OpenAPI, "/authors")
+
+	if sc, ok := booksSvc.Components().Get("Book"); ok {
+		component, _ := json.Marshal(sc.Map())
+		fmt.Println("components.Book:", string(component))
+	}
+}
+
+func printParams(label string, oapi *humav2.OpenAPI, path string) {
+	fmt.Println(label + " parameters:")
+	for _, p := range oapi.Paths[path].Get.Parameters {
 		schema, _ := json.Marshal(p.Schema)
-		fmt.Printf("  %-8s %-48q %s\n", p.Name, p.Description, schema)
+		extra := ""
+		if p.Style != "" {
+			extra = fmt.Sprintf(" style=%s", p.Style)
+		}
+		if p.Explode != nil {
+			extra += fmt.Sprintf(" explode=%t", *p.Explode)
+		}
+		fmt.Printf("  %-8s %-52q %s%s\n", p.Name, p.Description, schema, extra)
 	}
-	book, _ := json.Marshal(wfhuma.BridgeOf(oapi).Map()["Book"])
-	fmt.Println("components.Book:", string(book))
-	names := make([]string, 0)
-	for name := range wfhuma.BridgeOf(oapi).Map() {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	fmt.Println("components:", names)
 }

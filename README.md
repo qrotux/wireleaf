@@ -304,25 +304,41 @@ import (
 	humav2 "github.com/danielgtaylor/huma/v2"
 )
 
-c := apidoc.NewComponents()
-// … register the graph's components into c as above …
+// New emits the graph's components and builds huma's config over them — the
+// document's schema registry IS the bridge, so huma reflects request and
+// response bodies through wireleaf's reflector into the same set.
+a := wfhuma.New(g, include.DefaultOptions, "Books", "1.0.0")
+api := humago.New(mux, a.Config())
+a.Attach(api)                              // fills include.Request (Ctx.Header)
+book := wfhuma.Bind[BookWire](a, "Book")   // node → wire type → Node[W] component
 
-// The document's schema registry IS the bridge over c: huma reflects request
-// and response bodies through wireleaf's reflector, into the same set.
-cfg := wfhuma.NewConfig("Books", "1.0.0", wfhuma.WithRegistry(c))
-api := humav2.NewAPI(cfg, adapter)
+wfhuma.Register(a, humav2.Operation{
+	OperationID: "get-book", Method: http.MethodGet, Path: "/books/{id}",
+}, func(ctx context.Context, in *getBookInput) (*getBookOutput, error) {
+	b, err := book.Get(ctx, in.ID, in.Include) // hydrated Node[BookWire]
+	if err != nil {
+		return nil, err
+	}
+	return &getBookOutput{Body: BookEnvelope{Data: b}}, nil
+}, book.Include(), a.Errors(errBookNotFound)) // ?include= + x-include-paths + 404
 
-humav2.Register(api, wfhuma.Op(humav2.Operation{
-	OperationID: "get-book",
-	Method:      http.MethodGet,
-	Path:        "/books/{id}",
-},
-	wfhuma.IncludeParam(g.Resource("Book")), // ?include= param + x-include-paths
-	wfhuma.Errors(
-		wfhuma.ErrorDef{Status: 404, Code: "BOOK_NOT_FOUND", Message: "no such book"},
-	),
-), handler)
+wfhuma.Register(a, humav2.Operation{
+	OperationID: "list-books", Method: http.MethodGet, Path: "/books",
+}, func(ctx context.Context, in *listBooksInput) (*listBooksOutput, error) {
+	page, err := book.List(ctx, in.ListQuery, listBooks(in.Q))
+	if err != nil {
+		return nil, err
+	}
+	return &listBooksOutput{Body: BookPageEnvelope{Data: page.Data, Pagination: page.Offset}}, nil
+}, book.Inputs()) // ?sort/?page/?limit/?where from the node's graph.Inputs
 ```
+
+`listBooksInput` embeds `wfhuma.ListQuery`; `book.Inputs()` documents the list
+parameters from the node's declaration and `book.List` enforces the same one,
+so the document and the 400s cannot drift. Field documentation uses huma's
+`doc:"…"` tag on wire types, input structs and bodies alike — the reflector
+reads it as the equivalent of `description:"…"`, so one dialect annotates the
+whole surface.
 
 `NewConfig` builds huma's config directly rather than from `DefaultConfig`: the
 `SchemaLinkTransformer` (which injects a `$schema` field into every body) and
