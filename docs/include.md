@@ -391,10 +391,12 @@ All three run `ResolvePlan` first (400-before-fetch), then delegate to
 
 ## Filters
 
-`include` carries the filter **model**, not a filter syntax: a sealed AST a
-parser produces, and `ResolveFilter`, which checks it against the graph. The
-parser (a JSON `where` body, a `?where[field][op]=` query string) and the SQL
-generation (joins, `EXISTS`) both live in the application's adapter.
+`include` carries the filter **model**: a sealed AST a parser produces, and
+`ResolveFilter`, which checks it against the graph. It also ships the two
+parsers most applications would otherwise rewrite (see *Parsers* below) — but
+never the SQL generation (joins, `EXISTS`), which is a dialect and stays in the
+application's adapter. `ResolveFilter` remains the ONE place that judges names,
+operators and limits, whichever parser built the AST.
 
 ```go
 type FilterOp string // OpEq, OpNe, OpLt, OpLte, OpGt, OpGte, OpIn, OpNin
@@ -467,10 +469,102 @@ walks `Hops` and `Column.Col`, both compile-time constants from struct tags.
 hops the tree will run as correlated subqueries, the number to reserve in an
 application cost bucket next to `plan.Cost`.
 
-`examples/filter/main.go` is the runnable reference for both application-owned
-halves: a JSON `where` parser producing `include.Filter`, and a printer that
-renders the `ResolvedFilter` as SQL — joins, the three `EXISTS` templates, and
-bound arguments — without a database.
+`examples/filter/main.go` is the runnable reference for the application-owned
+half: it unwraps a `{"where": …}` envelope into `ParseFilterJSON` and prints
+the `ResolvedFilter` as SQL — joins, the three `EXISTS` templates, and bound
+arguments — without a database.
+
+### Parsers
+
+A syntax is a product decision, so the AST above is the contract and an
+application may always write its own parser against it. Two spellings are
+common enough to ship:
+
+```go
+func ParseFilterJSON(root Resource, raw []byte) (Filter, error)
+func ParseFilterQuery(root Resource, values url.Values) (Filter, error)
+func FilterOpsFor(t reflect.Type) []FilterOp
+```
+
+`ParseFilterJSON` parses ONE filter node — the value of a request's `where`
+key; the envelope around it stays the application's:
+
+```
+{"and": [<node>, ...]}          {"or": [<node>, ...]}
+{"<dotted.path>": {"<op>": <value>}}
+```
+
+One key per object, always: a group key and a field key in one object have no
+defined precedence. A path is edge keys followed by the field, with the
+quantifier suffixes of *Quantifiers* below — none = `any`, `*` = `all`,
+`~` = `none` — on the SEGMENT when the path crosses several to-many hops and
+on the FIELD when it crosses exactly one. Resolving the field suffix needs the
+graph, so the parser takes the root and walks `Edges()` to learn which segments
+are `Many`; a to-many segment nobody quantified becomes `any`.
+
+The parser judges SYNTAX only. An unknown edge key or field passes through
+untouched, for `ResolveFilter` to reject with a bounded path — so there is one
+place a name is judged, not two. Its own faults are
+`*Error{Code: INVALID_FILTER, Status: 400}` with `Path` in the conventions
+above and nothing else in it: the offending key, `"<key>:<op>"` for an operator
+fault, `"<path>:<quant>"` for a quantifier fault, and `""` for a structural
+fault with no key to name. Client text is echoed through the same 16-byte bound
+the resolver uses, and a multi-key object reports its first key plus a count
+rather than all of them — a client never sizes the 400 body. Values pass
+through as `encoding/json` decoded them (a JSON number is a `float64` even for
+an int column); the adapter coerces by `Column.Type`.
+
+`ParseFilterQuery` is the same AST from a query string — the spelling a browser
+or a `curl` can type — reading only the keys that start with `where[` and
+ignoring every other parameter, so it composes with `page`, `include` and the
+rest:
+
+```
+where[<dotted.path>][<op>]=<value>
+where[or][<i>][<dotted.path>][<op>]=<value>       where[and][<i>]…
+```
+
+Paths and quantifier suffixes are exactly `ParseFilterJSON`'s
+(`where[works.title~][eq]=x`), and groups nest — a group's members are its
+distinct indices, ordered numerically, each member itself an AND of the keys
+that share its index. Bracket keys carry no precedence, so **siblings at one
+level are always AND-ed**: two conditions, two groups, or a group standing next
+to a condition. The order inside that AND is fixed for determinism — the groups
+first (`and`, then `or`, by index), then the conditions sorted by key — and a
+lone member is returned bare rather than wrapped. No `where[` key at all yields
+a nil `Filter`, not an empty one.
+
+A URL value is a string, so this parser is the one place that coerces, by the
+`Column.Type` of the leaf the path lands on:
+
+| Column type | Value |
+| --- | --- |
+| `int`, `int8` … `int64` | `int64` |
+| `uint`, `uint8` … `uint64` | `uint64` |
+| `float32`, `float64` | `float64` |
+| `bool` | `bool` (`strconv.ParseBool`: `true`, `1`, `t`, …) |
+| `time.Time` | `time.Time`, parsed as RFC 3339 |
+| anything else, or an unknown path or field | the string as given |
+
+`in` and `nin` split the value on `,` into a `[]any` of coerced members
+(`where[age][in]=1,2`) — which is also the limit of the syntax: a value that
+itself contains a comma needs the JSON spelling. The widths are the AST's, not
+the column's; narrowing to the column is the adapter's job, as it is for the
+`float64` a JSON number decodes to.
+
+Its faults are the same `*Error{INVALID_FILTER}` with the same clipped-client-
+text `Path`, and in the same conventions: a condition fault names the path —
+`"<path>:<op>"` for an unknown operator, `"<path>:<value>"` for a value the
+column's type refuses — while a structural fault, which has read no path yet,
+names the whole bracket key: a malformed key (`where[title]`, `where[]`,
+`where[title][eq][x]`), a key given twice, a non-numeric group index. Unknown edges and fields still pass through to
+`ResolveFilter`, where the value stays a string.
+
+`FilterOpsFor` reads the operator ↔ column-type matrix forwards: the subset of
+`eq ne in nin lt lte gt gte` a column of type `t` admits, in that fixed order,
+and nil for a type outside `FilterableType`. The resolver asks "is this
+operator allowed here"; a documentation or input-schema caller asks "which
+operators may a client name here", and both answer from the one matrix.
 
 ### Quantifiers
 
@@ -499,14 +593,14 @@ column is `NULL` makes `cond` — and so `NOT cond` — `NULL`, so that child is
 neither selected under `any` / `none` nor a violation under `all`; the core
 neither touches values nor compensates for it.
 
-Syntax is the application parser's. A recommended JSON spelling: no suffix is
-`any` (`{"reviews.rating": {"gt": 4}}`), `*` is `all`
+The spelling `ParseFilterJSON` accepts, and the one to keep in a hand-written
+parser: no suffix is `any` (`{"reviews.rating": {"gt": 4}}`), `*` is `all`
 (`{"reviews.rating*": {"gt": 4}}`), `~` is `none` (`{"reviews.rating~":
 {"gt": 4}}`); the suffix sits on the field when the path has exactly one
 to-many segment and on the segment when it has several
 (`reviews~.author.works*.title`).
 
-Reserved keys: the JSON format the adapter is expected to parse uses `and` /
+Reserved keys: both shipped formats use `and` /
 `or` as group keys, so `graph.Compile` refuses a filterable column whose json
 key is one of them — and a `Filterable()` EDGE keyed `and` or `or` just the
 same, since a hop and a group sit in the same key position.

@@ -1,11 +1,14 @@
-// Command filter shows the two pieces the core deliberately does NOT own.
+// Command filter shows the ends the core deliberately does NOT own.
 //
 // `include` carries the filter MODEL — a sealed AST (FilterAnd / FilterOr /
-// FilterCond) and ResolveFilter, which checks it against the compiled graph —
-// but no syntax and no SQL. A syntax is a product decision and SQL is a
-// dialect; both belong to the application. This file is the reference for
-// them: parseWhere turns a JSON `where` body into an include.Filter, and
-// render turns the ResolvedFilter that comes back into SQL text.
+// FilterCond), ResolveFilter, which checks it against the compiled graph, and
+// ParseFilterJSON, one ready-made JSON syntax for it — but no SQL and no
+// request shape. Those belong to the application, and this file is the
+// reference for them: parseWhere unwraps the request envelope and hands the
+// `where` node to include.ParseFilterJSON, and render turns the
+// ResolvedFilter that comes back into SQL text. An application that wants a
+// different syntax writes its own parser against the same AST; this one takes
+// what the library ships.
 //
 // It PRINTS the SQL instead of executing it, so the three EXISTS templates of
 // docs/include.md — any / all / none — and the deny-by-default rules are
@@ -112,33 +115,14 @@ func buildGraph() (*graph.Graph, include.Resource) {
 
 // ------------------------------------------------------------------ the parser
 
-// ops is the closed operator set the JSON grammar admits, mirroring the
-// include.Op* constants. A word outside it is a client error, not a column.
-var ops = map[string]include.FilterOp{
-	"eq": include.OpEq, "ne": include.OpNe,
-	"lt": include.OpLt, "lte": include.OpLte,
-	"gt": include.OpGt, "gte": include.OpGte,
-	"in": include.OpIn, "nin": include.OpNin,
-}
-
-// parseWhere turns `{"where": <node>}` into an include.Filter.
-//
-// Node grammar (one key per object, always):
-//
-//	{"and": [<node>, ...]}          {"or": [<node>, ...]}
-//	{"<dotted.path>": {"<op>": <value>}}
-//
-// The dotted path is edge keys followed by the field. Quantifier suffixes are
-// the spelling docs/include.md recommends: none = any, `*` = all, `~` = none;
-// the suffix sits on the SEGMENT when the path crosses several to-many hops,
-// and on the FIELD when it crosses exactly one.
-//
-// The field-suffix sugar is only unambiguous with the graph in hand, so the
-// parser takes the compiled root and walks Edges() to learn which segments are
-// Many. That is a legitimate use of the graph: it is a syntax decision the
-// application owns, made against the same declaration ResolveFilter checks.
-// Everything else stays ResolveFilter's job — an unknown edge key is left
-// alone here and reported there, with a bounded path.
+// The JSON `where` grammar now lives in the library as
+// include.ParseFilterJSON — one key per object, `and`/`or` arrays, and
+// `{"<dotted.path>": {"<op>": <value>}}` with the quantifier suffixes
+// docs/include.md recommends (none = any, `*` = all, `~` = none). What stays
+// here is what an application really owns: the request ENVELOPE around the
+// node, and the SQL renderer below. Errors from the parser are
+// *include.Error{INVALID_FILTER} with a bounded path, the same shape
+// ResolveFilter returns for an unknown name.
 func parseWhere(root include.Resource, body []byte) (include.Filter, error) {
 	var outer map[string]json.RawMessage
 	if err := json.Unmarshal(body, &outer); err != nil {
@@ -148,156 +132,7 @@ func parseWhere(root include.Resource, body []byte) (include.Filter, error) {
 	if !ok {
 		return nil, errors.New(`body has no "where" key`)
 	}
-	return parseNode(root, raw)
-}
-
-func parseNode(root include.Resource, raw json.RawMessage) (include.Filter, error) {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		return nil, fmt.Errorf("filter node is not a JSON object: %w", err)
-	}
-	if len(obj) != 1 {
-		// This is what forbids {"and": [...], "title": {...}}: a group key and
-		// a field key in one object have no defined precedence.
-		return nil, fmt.Errorf("filter node must have exactly one key, got %d (%s)", len(obj), strings.Join(clipAll(sortedKeys(obj)), ", "))
-	}
-	key := sortedKeys(obj)[0]
-	if key == "and" || key == "or" {
-		var items []json.RawMessage
-		if err := json.Unmarshal(obj[key], &items); err != nil {
-			return nil, fmt.Errorf("%q must hold an array of filter nodes", clip(key))
-		}
-		members := make([]include.Filter, 0, len(items))
-		for i, it := range items {
-			m, err := parseNode(root, it)
-			if err != nil {
-				return nil, fmt.Errorf("%s[%d]: %w", clip(key), i, err)
-			}
-			members = append(members, m)
-		}
-		if key == "and" {
-			return include.FilterAnd(members), nil
-		}
-		return include.FilterOr(members), nil
-	}
-	return parseCond(root, key, obj[key])
-}
-
-func parseCond(root include.Resource, path string, raw json.RawMessage) (include.Filter, error) {
-	var body map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &body); err != nil {
-		return nil, fmt.Errorf("%q: value must be an object {\"<op>\": <value>}", clip(path))
-	}
-	if len(body) != 1 {
-		return nil, fmt.Errorf("%q: exactly one operator expected, got %d (%s)", clip(path), len(body), strings.Join(clipAll(sortedKeys(body)), ", "))
-	}
-	opKey := sortedKeys(body)[0]
-	op, ok := ops[opKey]
-	if !ok {
-		return nil, fmt.Errorf("%q: unknown operator %q", clip(path), clip(opKey))
-	}
-	// The value passes through exactly as encoding/json decoded it —
-	// float64, string, bool, []any, nil. No coercion: the adapter binds it by
-	// Column.Type, and the engine judges the OPERATOR, never the value. A
-	// JSON number therefore arrives as a float64 even for an int column; a
-	// real adapter converts it by Column.Type, this printer does not.
-	var value any
-	if err := json.Unmarshal(body[opKey], &value); err != nil {
-		return nil, fmt.Errorf("%q: %w", clip(path), err)
-	}
-
-	segs := strings.Split(path, ".")
-	field, quant := splitQuant(segs[len(segs)-1])
-	steps := make([]include.FilterStep, 0, len(segs)-1)
-	for _, s := range segs[:len(segs)-1] {
-		key, q := splitQuant(s)
-		steps = append(steps, include.FilterStep{Key: key, Quant: q})
-	}
-
-	// Walk the declared edges to classify each segment. A key the graph does
-	// not know stops the walk: the rest is unknowable here, and ResolveFilter
-	// is the one that reports it.
-	many := make([]int, 0, len(steps))
-	cur := root
-	known := true
-	for i, st := range steps {
-		e, ok := cur.Edges()[st.Key]
-		if !ok || e.Target == nil {
-			known = false
-			break
-		}
-		if e.Many {
-			many = append(many, i)
-		}
-		cur = e.Target()
-		if cur == nil {
-			known = false
-			break
-		}
-	}
-
-	if quant != "" && known {
-		// A suffix on the field names the path's single to-many segment.
-		if len(many) != 1 {
-			return nil, fmt.Errorf("%q: a quantifier suffix on the field needs exactly one to-many segment in the path, found %d — put the suffix on the segment instead", clip(path), len(many))
-		}
-		if steps[many[0]].Quant != "" {
-			return nil, fmt.Errorf("%q: quantifier given twice, on the field and on segment %q", clip(path), clip(steps[many[0]].Key))
-		}
-		steps[many[0]].Quant = quant
-	} else if quant != "" && !known {
-		return nil, fmt.Errorf("%q: a quantifier suffix on the field needs a known path", clip(path))
-	}
-	// A to-many segment nobody quantified is `any`, the no-suffix default.
-	if known {
-		for _, i := range many {
-			if steps[i].Quant == "" {
-				steps[i].Quant = include.QuantAny
-			}
-		}
-	}
-	if len(steps) == 0 {
-		steps = nil
-	}
-	return include.FilterCond{Path: steps, Field: field, Op: op, Value: value}, nil
-}
-
-// clip bounds client text echoed in a parser error at 16 bytes plus "…", the
-// same rule the core's clientEcho applies: an error body must not be sized by
-// the client. The cut lands on a rune boundary.
-func clip(s string) string {
-	const max = 16
-	if len(s) <= max {
-		return s
-	}
-	end := 0
-	for i := range s {
-		if i > max {
-			break
-		}
-		end = i
-	}
-	return s[:end] + "…"
-}
-
-// clipAll clips each key of a list for an error message.
-func clipAll(keys []string) []string {
-	out := make([]string, len(keys))
-	for i, k := range keys {
-		out[i] = clip(k)
-	}
-	return out
-}
-
-// splitQuant strips a trailing `*` (all) or `~` (none) from one path segment.
-func splitQuant(s string) (string, include.Quant) {
-	switch {
-	case strings.HasSuffix(s, "*"):
-		return strings.TrimSuffix(s, "*"), include.QuantAll
-	case strings.HasSuffix(s, "~"):
-		return strings.TrimSuffix(s, "~"), include.QuantNone
-	}
-	return s, ""
+	return include.ParseFilterJSON(root, raw)
 }
 
 func sortedKeys[V any](m map[string]V) []string {
