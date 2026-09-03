@@ -21,6 +21,7 @@ import "github.com/qrotux/wireleaf/include"
 //	        {Key: "books", Kind: graph.Reverse[BookWire]("authorId"), Inverse: "author", Limit: 10, Includable: true},
 //	    },
 //	    FetchIDs: fetchAuthors,
+//	    Inputs:   &graph.Inputs{Sort: graph.SortInput{Enabled: true, Default: "name"}},
 //	}
 //
 // The zero value of a field means "not declared" exactly as the corresponding
@@ -46,6 +47,9 @@ type Spec[Row any, Wire any] struct {
 	// Envelope, when non-nil, fixes the wrapper style of every edge INTO this
 	// node (NodeHandle.Envelope).
 	Envelope *include.Envelope
+
+	// Inputs, when non-nil, declares the node's list inputs (NodeHandle.Inputs).
+	Inputs *Inputs
 
 	// Edges are registered IN ORDER, as declaration order matters (Defaults,
 	// finding order, doc emission).
@@ -114,6 +118,9 @@ func Add[Row any, Wire any](b *Builder, s Spec[Row, Wire]) *NodeHandle[Row, Wire
 	}
 	if s.Envelope != nil {
 		h.Envelope(*s.Envelope)
+	}
+	if s.Inputs != nil {
+		h.Inputs(*s.Inputs)
 	}
 	for _, es := range s.Edges {
 		es.apply(h.Edge(es.Key, es.Kind))

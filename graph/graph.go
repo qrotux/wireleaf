@@ -26,6 +26,11 @@ type compiledNode struct {
 	sortCols map[string]string         // json name → SQL-side sort key
 	cols     map[string]include.Column // json name → SQL-side binding (col tags)
 
+	// inputs is the node's compiled list-input contract; hasInputs reports
+	// whether the node declared one (false = include.DefaultInputs()).
+	inputs    include.Inputs
+	hasInputs bool
+
 	defaults    []string
 	docExternal bool
 
@@ -47,6 +52,9 @@ var _ include.Resource = (*compiledNode)(nil)
 
 // Compile-time assertion that a compiled node exposes its column bindings.
 var _ include.ColumnSource = (*compiledNode)(nil)
+
+// Compile-time assertion that a compiled node exposes its list inputs.
+var _ include.InputSource = (*compiledNode)(nil)
 
 func (n *compiledNode) Name() string { return n.name }
 func (n *compiledNode) Slug() string { return n.slug }
@@ -73,6 +81,10 @@ func (n *compiledNode) Edges() map[string]include.Edge { return n.edges }
 // LIVE map under the accessor contract above; nil when the wire declares no
 // column at all.
 func (n *compiledNode) Columns() map[string]include.Column { return n.cols }
+
+// Inputs returns the node's compiled list-input contract and whether the node
+// declared one (false = include.DefaultInputs()).
+func (n *compiledNode) Inputs() (include.Inputs, bool) { return n.inputs, n.hasInputs }
 
 // IDOf performs the single localized any→Row assertion and delegates to the
 // boxed PrimaryKey closure (guaranteed non-nil by Compile).

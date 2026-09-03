@@ -377,7 +377,7 @@ implements `BodySchemaProvider` pins its entire arm to that schema instead of
 reflection (needed when an arm carries nested named components that would
 otherwise reflect into dangling type-name refs).
 
-## Include paths
+## Include paths and input parameters
 
 ```go
 const XIncludePaths = "x-include-paths"
@@ -391,6 +391,79 @@ also what terminates cyclic graphs) — sorted lexicographically. A computed
 edge is an includable leaf. `IncludeParamSchema` wraps the list as a
 `{"type":"string", "x-include-paths":[…]}` parameter fragment; attaching it to
 an operation is the application's (or the huma adapter's) concern.
+
+### InputParams
+
+```go
+type FilterSyntax string
+
+const (
+	FilterJSON    FilterSyntax = "json"    // ?where=<JSON object>
+	FilterBracket FilterSyntax = "bracket" // ?where[path][op]=value
+)
+
+const (
+	XFilterFields = "x-filter-fields" // {"<wire key>": ["eq", …]}
+	XFilterSyntax = "x-filter-syntax" // "json" | "bracket"
+)
+
+type InputParam struct {
+	Name        string
+	Description string
+	Schema      map[string]any
+	Style       string
+	Explode     bool
+}
+
+func InputParams(res include.Resource, limits include.Limits, syntax FilterSyntax) []InputParam
+```
+
+`InputParams` documents the list parameters of a root resource. It reads the
+same `include.Inputs` (through `include.InputsOf`) that `include.ResolveInputs`
+enforces, so the served document and the accepted requests cannot drift: a node
+that declared no `Inputs` documents the default contract, and one that declared
+a sort or a filter documents exactly the keys it will accept. Each `InputParam`
+is a query parameter whose `Schema` is a JSON-schema fragment; `Style` and
+`Explode` are set only for the bracket `where`. Attaching the parameters to an
+operation is the application's (or the huma adapter's) concern.
+
+The returned order is fixed:
+
+| # | Name | Present when | Schema |
+|---|------|--------------|--------|
+| 1 | `include` | always | `IncludeParamSchema(IncludePaths(res, limits))` |
+| 2 | `sort` | `Inputs.Sort.Enabled` | `{"type":"string","enum":["k","-k",…]}`, plus `"default"` when `Sort.Default` is set |
+| 3 | `page` | `Page.Mode == PageModeOffset` | `{"type":"integer","minimum":1,"default":1}` |
+| 3 | `cursor` | `Page.Mode == PageModeCursor` | `{"type":"string"}` |
+| 4 | `limit` | always | `{"type":"integer","minimum":1,"maximum":Page.MaxLimit,"default":Page.DefaultLimit}` |
+| 5 | `where` | `Inputs.Filter.Enabled` | per syntax, below |
+
+The `sort` enum lists each wire key in both directions (`k` and `-k`), sorted
+by key. A node that declared nothing yields `include`, `page`, `limit` only,
+with the package defaults (`include.DefaultPageLimit` /
+`include.DefaultMaxPageLimit`) on `limit`.
+
+Both `where` syntaxes carry the same operator matrix under `x-filter-fields` —
+`{"<wire key>": ["eq", …]}` from `include.FilterOpsFor(Column.Type)`, keys
+sorted, so a client can see per field which operators are legal — and name the
+spelling under `x-filter-syntax`:
+
+- **`FilterJSON`** → `{"type":"string", "x-filter-syntax":"json", "x-filter-fields":{…}}`.
+  The value is one JSON object: `{"<path>": {"<op>": <value>}}`, `{"and": […]}`,
+  `{"or": […]}`.
+- **`FilterBracket`** → `{"type":"object", "properties":{…}, "x-filter-syntax":"bracket",
+  "x-filter-fields":{…}}` with `Style: "deepObject"` and `Explode: true`, spelling
+  the nesting out for a deepObject parameter: one property per filterable field,
+  each an object whose properties are that field's operators. An operator's
+  schema is the column's JSON scalar type (`bool` → `boolean`, any int/uint →
+  `integer`, floats → `number`, everything else → `string`); `in` and `nin` take
+  `{"type":"array","items":{"type":T}}` instead.
+
+Only the fields listed in `Inputs.Filter.Fields` — the filterable columns of
+the root itself — are enumerated. Whether a filter path may cross an edge is
+`include.ResolveFilter`'s judgement, not this fragment's: the enumeration
+documents the root vocabulary, it is not the schema a request is validated
+against.
 
 ## Serialization guarantees
 

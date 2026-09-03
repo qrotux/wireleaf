@@ -58,6 +58,7 @@ var (
 	specEnrich     = func([]bkRow, *include.Ctx) error { return nil }
 	specArgOK      = func(any) error { return nil }
 	specEnvelope   = include.Envelope{Key: "data"}
+	specInputs     = Inputs{Pagination: PageInput{Mode: include.PageModeOffset, DefaultLimit: 10, MaxLimit: 20}}
 )
 
 func specViaChain(b *Builder) (book *NodeHandle[bkRow, BkWire], author *NodeHandle[auRow, AuWire]) {
@@ -67,7 +68,8 @@ func specViaChain(b *Builder) (book *NodeHandle[bkRow, BkWire], author *NodeHand
 		PrimaryKey(specBookPK).
 		Enrich(specEnrich).
 		Defaults("author").
-		Envelope(specEnvelope)
+		Envelope(specEnvelope).
+		Inputs(specInputs)
 	book.Edge("author", ToOne[AuWire]()).
 		ForeignKey(specBookFK).
 		Inverse("books").
@@ -100,6 +102,7 @@ func specViaAdd(b *Builder) (book *NodeHandle[bkRow, BkWire], author *NodeHandle
 		Enrich:     specEnrich,
 		Defaults:   []string{"author"},
 		Envelope:   &specEnvelope,
+		Inputs:     &specInputs,
 		Edges: []EdgeSpec[bkRow]{
 			{Key: "author", Kind: ToOne[AuWire](), ForeignKey: specBookFK, Inverse: "books",
 				Required: true, Includable: true, Policies: []include.EdgePolicy{include.MissingRequiredError}},
@@ -152,6 +155,8 @@ type nodeShape struct {
 	docExternal                               bool
 	envelope                                  include.Envelope
 	envelopeSet, fetchIDs, fetchParents, root bool
+	inputs                                    Inputs
+	inputsSet                                 bool
 	edgeFetch                                 []string // per-edge bind keys, sorted
 	edges                                     []edgeShape
 }
@@ -163,8 +168,8 @@ func TestShapeMirrorsEveryField(t *testing.T) {
 	if n := reflect.TypeOf(edgeSettings{}).NumField(); n != 20 {
 		t.Errorf("edgeSettings has %d fields; edgeShape mirrors 20 — extend edgeShape/shapeOf", n)
 	}
-	if n := reflect.TypeOf(nodeSpec{}).NumField(); n != 19 {
-		t.Errorf("nodeSpec has %d fields; nodeShape mirrors 19 — extend nodeShape/shapeOf", n)
+	if n := reflect.TypeOf(nodeSpec{}).NumField(); n != 21 {
+		t.Errorf("nodeSpec has %d fields; nodeShape mirrors 21 — extend nodeShape/shapeOf", n)
 	}
 	// EdgeSpec must offer every EdgeBuilder option: Key + Kind + 14 options.
 	if n := reflect.TypeOf(EdgeSpec[bkRow]{}).NumField(); n != 16 {
@@ -182,6 +187,7 @@ func shapeOf(b *Builder, n *nodeSpec) nodeShape {
 		slugSet: n.slugSet, wireSet: n.wireSet, pkSet: n.primaryKeySet, enrichSet: n.enrichSet,
 		defaults: n.defaults, docExternal: n.docExternal,
 		envelope: n.envelope, envelopeSet: n.envelopeSet,
+		inputs: n.inputs, inputsSet: n.inputsSet,
 		fetchIDs: n.fetchIDs != nil, fetchParents: n.fetchParents != nil,
 	}
 	for _, r := range b.roots {

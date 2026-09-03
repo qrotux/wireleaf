@@ -149,6 +149,8 @@ func (b *Builder) Compile() (*Graph, error) {
 		}
 		cn.fields, cn.verdicts, cn.cols, cn.sortCols = sh.fields, sh.verdicts, sh.cols, sh.sortCols
 
+		cn.inputs, cn.hasInputs = compileInputs(&fs, n, cn.cols)
+
 		checkNodeClosures(&fs, n)
 		checkEnvelope(&fs, n.name, "", n.envelope, n.envelopeSet)
 	}

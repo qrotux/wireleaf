@@ -17,7 +17,8 @@ func specViaRelation(b *Builder) (book *NodeHandle[bkRow, BkWire], author *NodeH
 	// (per-edge) FetchParents is covered by TestRelationsKeepSeparateReverseFetchers.
 	book = Add(b, Spec[bkRow, BkWire]{
 		Name: "Book", Slug: "bk", Wire: specBookWire, PrimaryKey: specBookPK, Enrich: specEnrich,
-		Defaults: []string{"author"}, Envelope: &specEnvelope, FetchParents: specFetchBooksByAuthor,
+		Defaults: []string{"author"}, Envelope: &specEnvelope, Inputs: &specInputs,
+		FetchParents: specFetchBooksByAuthor,
 	})
 	author = Add(b, Spec[auRow, AuWire]{
 		Name: "Author", Wire: specAuthorWire, PrimaryKey: specAuthorPK, DocExternal: true,

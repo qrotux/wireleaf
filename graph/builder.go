@@ -58,6 +58,11 @@ type nodeSpec struct {
 	envelope    include.Envelope
 	envelopeSet bool
 
+	// inputs is the node's list-input declaration; inputsSet distinguishes a
+	// zero literal from no declaration.
+	inputs    Inputs
+	inputsSet bool
+
 	// edges is ORDERED by declaration and APPEND-ONLY: a relation keeps the
 	// *edgeDecl it appended and writes its backref through it later, so
 	// nothing may reorder, filter or replace entries.

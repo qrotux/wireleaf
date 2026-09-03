@@ -60,6 +60,7 @@ func (h *NodeHandle[Row, W]) Enrich(fn func([]Row, *include.Ctx) error) *NodeHan
 func (h *NodeHandle[Row, W]) Defaults(keys ...string) *NodeHandle[Row, W]
 func (h *NodeHandle[Row, W]) DocExternal() *NodeHandle[Row, W]
 func (h *NodeHandle[Row, W]) Envelope(e include.Envelope) *NodeHandle[Row, W]
+func (h *NodeHandle[Row, W]) Inputs(in Inputs) *NodeHandle[Row, W]
 func (h *NodeHandle[Row, Wire]) Edge(key string, kind EdgeKind) *EdgeBuilder[Row]
 ```
 
@@ -78,6 +79,8 @@ func (h *NodeHandle[Row, Wire]) Edge(key string, kind EdgeKind) *EdgeBuilder[Row
   (after the explicit keys, in edge-declaration order) if not already listed.
 - **`DocExternal`** — the node's OpenAPI component is owned externally:
   emission stitches a `$ref` but never emits the fragment.
+- **`Inputs`** — what the node accepts on a LIST operation (sort, filter,
+  pagination); see [Inputs](#inputs).
 
 All closures are typed by the handle's own `Row`/`Wire` parameters, so a
 closure written against another node's types is a **Go compile error**, not a
@@ -259,6 +262,7 @@ type Spec[Row, Wire any] struct {
     Defaults     []string
     DocExternal  bool
     Envelope     *include.Envelope
+    Inputs       *Inputs
     Edges        []EdgeSpec[Row]
     FetchIDs     func(c *include.Ctx, ids []string) ([]Row, error)
     FetchParents FetchByParents[Row]
@@ -292,8 +296,67 @@ been called: a nil closure is not bound (`Compile` reports the mandatory ones
 as missing — `Wire is required`, never `Wire(nil)`), `Limit: 0` leaves the
 default top-N in place, `Slug: ""` lets `Compile` derive it. The two
 `Envelope` fields are pointers because a declared *zero* envelope (plain)
-overrides a non-plain graph default and so cannot be the zero value. Edges
-are registered in slice order.
+overrides a non-plain graph default and so cannot be the zero value. `Inputs`
+is a pointer for the same reason: a declared *zero* `Inputs` is still a
+declaration (`InputsOf` reports `true`), which the zero value cannot express.
+Edges are registered in slice order.
+
+## Inputs
+
+```go
+type Inputs struct {
+    Sort       SortInput
+    Filter     FilterInput
+    Pagination PageInput
+}
+type SortInput struct {
+    Enabled bool
+    Default string // wire json key, optional "-" prefix ("-year")
+}
+type FilterInput struct{ Enabled bool }
+type PageInput struct {
+    Mode                   include.PageMode // "" = offset
+    DefaultLimit, MaxLimit int              // 0 = include defaults (20 / 100)
+}
+```
+
+`Inputs` declares what a node accepts on a **list** operation. It only
+switches roles on and bounds them — the **vocabulary comes from the wire
+struct's `col` tags**, so a sort key or filter field can never name a column
+the node does not bind:
+
+- `Sort.Keys` = every column tagged `sort`, as wire json name → `Column.Col`.
+- `Filter.Fields` = every column tagged `filter`, as wire json name →
+  `include.Column`.
+- `Page` = the declaration, with `Mode: ""` → `offset` and a zero limit taking
+  the `include` default (`DefaultPageLimit` 20 / `DefaultMaxPageLimit` 100).
+
+`Sort.Default` is kept in **wire form** (the json key with its optional `-`);
+`ResolveInputs` resolves it through `Keys` like a client-sent value.
+
+`Compile` writes the result into the compiled node, which implements
+`include.InputSource`:
+
+```go
+in, ok := include.InputsOf(g.Resource("Book")) // ok == the node DECLARED Inputs
+```
+
+A node that never calls `Inputs` (or leaves `Spec.Inputs` nil) reports
+`include.DefaultInputs(), false` — offset pagination with the default limits,
+no sort, no filter. Callers treat the two cases identically.
+
+`Compile` findings for an incoherent declaration:
+
+| Finding | Cause |
+| --- | --- |
+| `Inputs.Sort enabled but no wire field carries col:"…,sort"` | `Sort.Enabled` with no sortable column |
+| `Inputs.Sort.Default %q is not a sortable column` | `Sort.Default` (after stripping `-`) is not in the sortable set |
+| `Inputs.Sort.Default set but Sort is not enabled` | a default sort without `Sort.Enabled` |
+| `Inputs.Filter enabled but no wire field carries col:"…,filter"` | `Filter.Enabled` with no filterable column |
+| `Inputs.Pagination limits must not be negative` | `DefaultLimit` or `MaxLimit` < 0 |
+| `Inputs.Pagination.DefaultLimit %d exceeds MaxLimit %d` | resolved default limit above the resolved max |
+| `Inputs.Pagination.Mode %q is not offset or cursor` | unknown `PageMode` |
+
 
 ## Relations: `OneToMany` and `ManyToMany`
 
@@ -358,12 +421,13 @@ type CompileError struct{ Findings []Finding }
 
 `Compile` is the **only** validation point. It kills the builder first, then
 runs its passes over every declaration: node identity (empty/duplicate names,
-duplicate wire types), per-node shape and closures, per-edge target
-resolution and kind ↔ option coherence, inverse pairing, default-edge cycle
-detection, and reachability-driven fetcher completeness (walking includable ∪
-default edges from the roots: a node reached by a forward edge needs
-`FetchIDs`, by a reverse edge `FetchParents` unless that edge has its own
-`FetchEdge` bind; roots themselves need neither — the handler seeds them).
+duplicate wire types), per-node shape, closures and list-input coherence (see
+[Inputs](#inputs)), per-edge target resolution and kind ↔ option coherence,
+inverse pairing, default-edge cycle detection, and reachability-driven fetcher
+completeness (walking includable ∪ default edges from the roots: a node
+reached by a forward edge needs `FetchIDs`, by a reverse edge `FetchParents`
+unless that edge has its own `FetchEdge` bind; roots themselves need neither
+— the handler seeds them).
 
 Error taxonomy:
 
