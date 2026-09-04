@@ -4,12 +4,12 @@ go 1.26
 
 require (
 	github.com/danielgtaylor/huma/v2 v2.39.1
-	github.com/qrotux/wireleaf v0.2.2
+	github.com/qrotux/wireleaf v0.2.3
 	// TEST-ONLY: the validation-equivalence suite (equivalence_test.go) validates
 	// the same instances against the emitted document schema with a real
 	// draft-2020-12 validator. No non-test file in this module imports it.
-	github.com/qrotux/wireleaf/apidoc/crosscheck v0.2.1
-	github.com/qrotux/wireleaf/reflector v0.2.1
+	github.com/qrotux/wireleaf/apidoc/crosscheck v0.2.3
+	github.com/qrotux/wireleaf/reflector v0.2.3
 )
 
 require (
