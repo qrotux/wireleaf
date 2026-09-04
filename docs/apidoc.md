@@ -371,7 +371,7 @@ type UnionVariant interface { VariantType() reflect.Type; VariantStatus() int }
 type Variant[T any] struct{ Status int }        // implements UnionVariant
 type Union struct { Discriminator string; Variants []UnionVariant }
 func UnionOf(discriminator string, vs ...UnionVariant) Union   // panics on < 2 variants
-func (u Union) Schema(r Reflector) (Schema, error)
+func (u Union) Schema(r Reflector, c *Components) (Schema, error)   // errors on nil c
 ```
 
 A `Union` models a multi-status response: one declared sum type is the single
@@ -380,10 +380,14 @@ the reflector and composes `{"oneOf": [...]}` in declaration order, while the
 per-variant statuses are read by the application's operation layer for
 envelope/response derivation. The runtime half (marshalling the returned value
 and picking its status) is not in this package. `Discriminator` is stored but
-**not** emitted into the fragment. A variant must be a struct; one that
-implements `BodySchemaProvider` pins its entire arm to that schema instead of
-reflection (needed when an arm carries nested named components that would
-otherwise reflect into dangling type-name refs).
+**not** emitted into the fragment. A variant must be a struct. Arms resolve
+against `c` the way the huma bridge resolves a body type: a variant that
+implements `BodySchemaProvider` pins its entire arm to that schema; a variant
+whose type `c` binds is a `$ref` to that component; otherwise the arm is
+reflected inline with every binding of `c` as a name override, so a nested
+struct `c` binds (a graph node's wire type) is `$ref`'d under its bound name,
+and every other auxiliary is registered into `c` (no owner type) so no `$ref`
+is left dangling.
 
 ## Include paths and input parameters
 

@@ -59,7 +59,7 @@ func TestUnionSchemaOneOfInVariantOrder(t *testing.T) {
 		Variant[unionCreated]{Status: 201},
 		Variant[unionAccepted]{Status: 202},
 	)
-	s, err := u.Schema(stubReflector{})
+	s, err := u.Schema(stubReflector{}, NewComponents())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestUnionSchemaHonorsBodySchemaProvider(t *testing.T) {
 		Variant[unionPinned]{Status: 201},
 		Variant[unionAccepted]{Status: 202},
 	)
-	s, err := u.Schema(stubReflector{})
+	s, err := u.Schema(stubReflector{}, NewComponents())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestUnionSchemaPropagatesReflectorError(t *testing.T) {
 		Variant[unionCreated]{Status: 201},
 		Variant[unionAccepted]{Status: 202},
 	)
-	if _, err := u.Schema(stubReflector{err: errors.New("boom")}); err == nil {
+	if _, err := u.Schema(stubReflector{err: errors.New("boom")}, NewComponents()); err == nil {
 		t.Fatalf("reflector error must propagate")
 	}
 }
@@ -128,7 +128,7 @@ func TestUnionSchemaRejectsNonStructVariant(t *testing.T) {
 		Variant[int]{Status: 201},
 		Variant[unionAccepted]{Status: 202},
 	)
-	if _, err := u.Schema(stubReflector{}); err == nil {
+	if _, err := u.Schema(stubReflector{}, NewComponents()); err == nil {
 		t.Fatalf("non-struct variant must error")
 	}
 }
@@ -150,5 +150,85 @@ func TestNodeComponentHitAndMiss(t *testing.T) {
 	}
 	if name, ok := c.NodeComponent(reflect.TypeFor[Node[unionCreated]]()); ok {
 		t.Fatalf("unregistered Node type must miss, got %q", name)
+	}
+}
+
+// unionNested carries a nested struct: its auxiliary must land in the shared
+// set under the name the arm's $ref uses.
+type unionAux struct {
+	Kind string `json:"kind"`
+}
+
+type unionNested struct {
+	ID  string   `json:"id"`
+	Aux unionAux `json:"aux"`
+}
+
+func TestUnionSchemaRegistersAuxiliariesIntoComponents(t *testing.T) {
+	u := UnionOf("status",
+		Variant[unionNested]{Status: 201},
+		Variant[unionAccepted]{Status: 202},
+	)
+	c := NewComponents()
+	s, err := u.Schema(stubReflector{}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arm := s.Map()["oneOf"].([]any)[0].(map[string]any)
+	if ref := prop(t, arm, "aux")["$ref"]; ref != RefPrefix+"unionAux" {
+		t.Fatalf("aux $ref = %v", ref)
+	}
+	if _, ok := c.Get("unionAux"); !ok {
+		t.Fatal("the auxiliary was not registered into the shared set")
+	}
+	if _, ok := c.Get("unionNested"); ok {
+		t.Fatal("the arm itself must not become a component")
+	}
+	// A second render is idempotent against the set.
+	if _, err := u.Schema(stubReflector{}, c); err != nil {
+		t.Fatalf("re-render: %v", err)
+	}
+}
+
+// A nested type the set binds under another name (a graph node) is $ref'd by
+// THAT name and the set's component is left alone; an arm whose own type is
+// bound is a $ref to its component, no reflection at all.
+func TestUnionSchemaKeepsExistingBindings(t *testing.T) {
+	c := NewComponents()
+	c.Add("AuxNode", RawFragment(map[string]any{"type": "object", "description": "graph-owned"}))
+	c.RegisterType(reflect.TypeFor[unionAux](), "AuxNode")
+	c.Add("AcceptedNode", RawFragment(map[string]any{"type": "object"}))
+	c.RegisterType(reflect.TypeFor[unionAccepted](), "AcceptedNode")
+
+	u := UnionOf("status",
+		Variant[unionNested]{Status: 201},
+		Variant[unionAccepted]{Status: 202},
+	)
+	s, err := u.Schema(stubReflector{}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arms := s.Map()["oneOf"].([]any)
+	if ref := prop(t, arms[0].(map[string]any), "aux")["$ref"]; ref != RefPrefix+"AuxNode" {
+		t.Fatalf("nested bound type $ref = %v, want the bound name", ref)
+	}
+	if want := map[string]any{"$ref": RefPrefix + "AcceptedNode"}; !reflect.DeepEqual(arms[1], want) {
+		t.Fatalf("bound arm = %v, want %v", arms[1], want)
+	}
+	if got, _ := c.Get("AuxNode"); got.Map()["description"] != "graph-owned" {
+		t.Fatalf("the set's component was replaced: %v", got.Map())
+	}
+	if _, ok := c.Get("unionAux"); ok {
+		t.Fatal("a component under the Go type name must not appear")
+	}
+}
+
+func TestUnionSchemaRejectsNilComponents(t *testing.T) {
+	u := UnionOf("status",
+		Variant[unionCreated]{Status: 201},
+		Variant[unionAccepted]{Status: 202},
+	)
+	if _, err := u.Schema(stubReflector{}, nil); err == nil {
+		t.Fatal("nil Components must error")
 	}
 }
