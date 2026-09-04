@@ -231,10 +231,20 @@ func (b *Registry) MarshalYAML() (any, error) { return b.Map(), nil }
 
 // reflectAndRegister reflects t through the canonical reflector and registers
 // every component it produced. Returns the top component's name.
+//
+// The reflector names a nested struct after its Go type, but the shared set
+// may already bind that type under another name (a graph node is Book, its
+// wire struct BookWire). Every known binding therefore goes in as a name
+// override, so the top's $ref lands on the bound name — and the component the
+// reflector emits under that name is SKIPPED: the set's version (stitched with
+// edges, or hand-assembled) is the authority, and re-registering the raw
+// reflection would be a second writer for the same fact.
 func (b *Registry) reflectAndRegister(t reflect.Type, hint string) string {
 	b.assertNoNodeWrappers(t)
 	name := componentName(t, hint)
-	comps, err := b.r.ReflectComponents([]reflect.Type{t}, map[reflect.Type]string{t: name})
+	overrides := b.c.TypeNames()
+	overrides[t] = name
+	comps, err := b.r.ReflectComponents([]reflect.Type{t}, overrides)
 	if err != nil {
 		panic(fmt.Sprintf("adapters/huma: reflecting %v into component %q: %v", t, name, err))
 	}
@@ -261,6 +271,8 @@ func (b *Registry) reflectAndRegister(t reflect.Type, hint string) string {
 		owner := owners[n]
 		if n == name {
 			owner = t // the requested type owns the requested name, whatever it is called
+		} else if _, bound := b.c.TypeOf(n); bound {
+			continue // named by an override: the set already owns this component
 		}
 		if err := b.c.RegisterReflected(n, comps[n], owner); err != nil {
 			panic(fmt.Sprintf("adapters/huma: registering component %q for %v: %v", n, t, err))

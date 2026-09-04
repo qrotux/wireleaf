@@ -152,6 +152,28 @@ func TestRegisterReflectedIdempotentVsConflict(t *testing.T) {
 	}
 }
 
+// TypeNames sees every binding whichever writer made it, and hands out a copy:
+// the bridge adds its own override to the result without touching the set.
+func TestTypeNamesIsACopyOfEveryBinding(t *testing.T) {
+	c := NewComponents()
+	if got := c.TypeNames(); got == nil || len(got) != 0 {
+		t.Fatalf("empty set: TypeNames = %v, want an empty non-nil map", got)
+	}
+	ta, tb := reflect.TypeFor[rrWireA](), reflect.TypeFor[rrWireB]()
+	c.RegisterType(ta, "A")
+	if err := c.RegisterReflected("B", newScalar("string"), tb); err != nil {
+		t.Fatal(err)
+	}
+	got := c.TypeNames()
+	if !reflect.DeepEqual(got, map[reflect.Type]string{ta: "A", tb: "B"}) {
+		t.Fatalf("TypeNames = %v", got)
+	}
+	got[ta] = "Elsewhere"
+	if name, _ := c.TypeName(ta); name != "A" {
+		t.Fatalf("mutating the result reached the set: %q", name)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // type / wrapper indexes
 // ---------------------------------------------------------------------------

@@ -144,6 +144,10 @@ component name; (4) the success-envelope derivation (before any reflection);
 `SchemaProvider`/`TextUnmarshaler` implementors) → huma's own `SchemaFromType`,
 recursing back through the bridge; (6) everything else → canonical reflector,
 with the top component *and* every auxiliary registered into the shared set.
+Every binding the set already holds (`Components.TypeNames`) goes to the
+reflector as a name override, so a nested wire type the graph binds as `Book`
+is `$ref`'d as `Book`, not `BookWire`; the component the reflector emits under
+such a name is skipped, since the set's version is the authority.
 
 Contracts and gotchas:
 

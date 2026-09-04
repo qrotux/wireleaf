@@ -161,6 +161,16 @@ func (c *Components) TypeName(t reflect.Type) (string, bool) {
 	return name, ok
 }
 
+// TypeNames returns every wire type → component name binding as a fresh map
+// the caller owns. It exists for the huma adapter's registry bridge, which
+// hands the bindings to the reflector as name overrides so a nested wire type
+// keeps the component name the set already gave it.
+func (c *Components) TypeNames() map[reflect.Type]string {
+	out := make(map[reflect.Type]string, len(c.byType))
+	maps.Copy(out, c.byType)
+	return out
+}
+
 // TypeOf is the reverse of TypeName: the WIRE type a component was registered
 // for, if any. A component assembled by hand (RawFragment with no RegisterType)
 // has none, and neither does an auxiliary the reflector named on its own.

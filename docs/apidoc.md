@@ -239,7 +239,8 @@ func ValidateComponent(name string, n *IRNode) error
 Type indexes (consumed mainly by the huma adapter's registry bridge):
 `RegisterType(t, name)` binds wire type → component (same-name rebind is a
 no-op, conflicting bind panics); `TypeName(t)` / `TypeOf(name)` are the two
-directions (first binding wins for `TypeOf`); `RegisterNode[W](c, component)`
+directions (first binding wins for `TypeOf`), `TypeNames()` is every binding
+as a fresh map the caller owns; `RegisterNode[W](c, component)`
 binds both `W` and the wrapper `Node[W]`; `RegisterWrapperType(t, component)` /
 `NodeComponent(t)` are the wrapper-side pair. `Components` is not safe for
 concurrent mutation — registration time only.

@@ -282,3 +282,42 @@ func keysOf(m map[string]*humav2.Schema) []string {
 	}
 	return out
 }
+
+// BridgeEmbed is bound in the shared set under a name that is NOT its Go type
+// name — the normal case for a graph node (Book vs BookWire) — and BridgeHost
+// nests it.
+type BridgeEmbed struct {
+	URL string `json:"url"`
+}
+
+type BridgeHost struct {
+	ID    string      `json:"id"`
+	Embed BridgeEmbed `json:"embed"`
+}
+
+// A nested type the set already binds under its own component name is
+// referenced under THAT name: the reflector must not rename it after its Go
+// type, and the set's component stays the authority (it is not re-registered).
+func TestBridgeNestedTypeKeepsExistingBinding(t *testing.T) {
+	b, c := newTestBridge()
+	c.Add("BridgeEmbedNode", apidoc.RawFragment(map[string]any{"type": "object", "description": "graph-owned"}))
+	c.RegisterType(reflect.TypeFor[BridgeEmbed](), "BridgeEmbedNode")
+
+	s := b.Schema(reflect.TypeFor[BridgeHost](), true, "body")
+	if s.Ref != apidoc.RefPrefix+"BridgeHost" {
+		t.Fatalf("ref = %q", s.Ref)
+	}
+	m := b.Map()
+	if got := keysOf(m); len(got) != 2 {
+		t.Fatalf("components = %v, want [BridgeEmbedNode BridgeHost]", got)
+	}
+	if got := m["BridgeHost"].Properties["embed"].Ref; got != apidoc.RefPrefix+"BridgeEmbedNode" {
+		t.Fatalf("embed ref = %q, want the bound name", got)
+	}
+	if got := m["BridgeEmbedNode"].Description; got != "graph-owned" {
+		t.Fatalf("the set's component was replaced: %+v", m["BridgeEmbedNode"])
+	}
+	if err := c.Verify(); err != nil {
+		t.Fatal(err)
+	}
+}
