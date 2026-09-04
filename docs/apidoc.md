@@ -358,8 +358,11 @@ required, and sub-includes under it are an error. The client tree limits
 (`MaxDepth`/`MaxNodes`) are enforced before any schema work; pass the same
 `include.Limits` as to the planner (zero value → `include.DefaultLimits`). The
 base object runs the **same** auxiliary inlining as
-`EmitComponents`, so every `$ref` `SchemaFor` emits resolves against that
-component map. `SchemaFor` never writes through a borrowed node.
+`EmitComponents`, and hands the reflector the same node-name overrides for
+every node reachable from root, so a node's wire struct nested as a plain
+field is `$ref`'d by node name on both sides and every `$ref` `SchemaFor`
+emits resolves against that component map. `SchemaFor` never writes through a
+borrowed node.
 
 ## Unions
 

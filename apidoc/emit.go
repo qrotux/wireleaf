@@ -114,24 +114,9 @@ func EmitComponents(r Reflector, roots []include.Resource) (map[string]Schema, e
 // emitFragments is the shared reflect → stitch → inline pipeline. nodes must
 // already be deduped (collectReachable does that for EmitComponents).
 func emitFragments(r Reflector, nodes []include.Resource) (map[string]*IRNode, error) {
-	// A reflector names a component after its Go TYPE (e.g. BookWire), but the
-	// graph identifies nodes by Name() (Book) and the stitched $refs point at
-	// Name(). Overriding each top wire type → Name() makes the emitted component
-	// land where those refs resolve; auxiliary types keep the default naming.
-	types := make([]reflect.Type, 0, len(nodes))
-	overrides := make(map[reflect.Type]string, len(nodes))
-	nodeNames := make(map[string]include.Resource, len(nodes))
-	for _, node := range nodes {
-		t, err := wireType(node)
-		if err != nil {
-			return nil, err
-		}
-		if prev, ok := overrides[t]; ok && prev != node.Name() {
-			return nil, fmt.Errorf("apidoc: wire type %s maps to two node names %q and %q", t, prev, node.Name())
-		}
-		types = append(types, t)
-		overrides[t] = node.Name()
-		nodeNames[node.Name()] = node
+	types, overrides, nodeNames, err := nodeOverrides(nodes)
+	if err != nil {
+		return nil, err
 	}
 
 	// One reflector call for every node at once: auxiliary components a wire
@@ -154,6 +139,31 @@ func emitFragments(r Reflector, nodes []include.Resource) (map[string]*IRNode, e
 		}
 	}
 	return inlineAux(out, nodeNames)
+}
+
+// nodeOverrides is the name map every reflection over graph nodes hands to the
+// reflector. A reflector names a component after its Go TYPE (BookWire), but
+// the graph identifies nodes by Name() (Book) and every $ref — stitched edges
+// and a node's wire struct nested as a plain field alike — points at Name().
+// Overriding each wire type → Name() makes the emitted components land where
+// those refs resolve; auxiliary types keep the default naming.
+func nodeOverrides(nodes []include.Resource) (types []reflect.Type, overrides map[reflect.Type]string, nodeNames map[string]include.Resource, err error) {
+	types = make([]reflect.Type, 0, len(nodes))
+	overrides = make(map[reflect.Type]string, len(nodes))
+	nodeNames = make(map[string]include.Resource, len(nodes))
+	for _, node := range nodes {
+		t, err := wireType(node)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if prev, ok := overrides[t]; ok && prev != node.Name() {
+			return nil, nil, nil, fmt.Errorf("apidoc: wire type %s maps to two node names %q and %q", t, prev, node.Name())
+		}
+		types = append(types, t)
+		overrides[t] = node.Name()
+		nodeNames[node.Name()] = node
+	}
+	return types, overrides, nodeNames, nil
 }
 
 // collectReachable returns the nodes reachable from roots through includable

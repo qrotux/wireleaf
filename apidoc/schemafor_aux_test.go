@@ -12,6 +12,7 @@ package apidoc
 
 import (
 	"maps"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -190,5 +191,40 @@ func TestSchemaForResolvesAgainstEmitComponentsMap(t *testing.T) {
 				t.Errorf("the recomputed schema does not resolve against EmitComponents' map: %v", err)
 			}
 		})
+	}
+}
+
+// nestedNodeHost carries another NODE's wire struct as a plain property (not
+// an edge). EmitComponents names that property's schema after the node, so
+// SchemaFor must too — or its $ref points at a Go type name no component has.
+type nestedNodeWire struct {
+	Kind string `json:"kind"`
+}
+
+type nestedNodeHost struct {
+	ID    string         `json:"id"`
+	Inner nestedNodeWire `json:"inner"`
+	Again nestedNodeWire `json:"again"`
+}
+
+func TestSchemaForNamesNestedNodeLikeEmit(t *testing.T) {
+	inner := &emitRes{name: "Inner", wire: nestedNodeWire{}, edges: map[string]include.Edge{}}
+	host := &emitRes{name: "Host", wire: nestedNodeHost{}, edges: map[string]include.Edge{
+		"link": {Target: func() include.Resource { return inner }, Includable: true},
+	}}
+	comps, err := EmitComponents(stubReflector{}, []include.Resource{host})
+	if err != nil {
+		t.Fatalf("EmitComponents: %v", err)
+	}
+	s, err := SchemaFor(stubReflector{}, host, include.IncludeTree{}, include.Limits{})
+	if err != nil {
+		t.Fatalf("SchemaFor: %v", err)
+	}
+	want := prop(t, comps["Host"].Map(), "inner")
+	if got := prop(t, s.Map(), "inner"); !reflect.DeepEqual(got, want) {
+		t.Errorf("SchemaFor inner = %v, EmitComponents inner = %v", got, want)
+	}
+	if ref := prop(t, s.Map(), "inner")["$ref"]; ref != RefPrefix+"Inner" {
+		t.Errorf("inner $ref = %v, want the node name", ref)
 	}
 }

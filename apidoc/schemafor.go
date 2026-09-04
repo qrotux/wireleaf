@@ -44,7 +44,6 @@ package apidoc
 
 import (
 	"fmt"
-	"reflect"
 	"sort"
 	"strings"
 
@@ -307,24 +306,23 @@ func setRequiredProp(base *IRNode, name string, value *IRNode) {
 // inlining. The residual gap is EmitComponent's documented restriction: a wire
 // struct referencing a node not reachable from root.
 func baseObjectIR(r Reflector, root include.Resource) (*IRNode, error) {
-	t, err := wireType(root)
+	nodes, err := collectReachable([]include.Resource{root})
 	if err != nil {
 		return nil, err
 	}
-	out, err := r.ReflectComponents([]reflect.Type{t}, map[reflect.Type]string{t: root.Name()})
+	// Every reachable node goes into the overrides (not only the root) so a
+	// node's wire struct nested as a plain field is named — and kept as a $ref
+	// by inlineAux — exactly as EmitComponents names it.
+	types, overrides, nodeNames, err := nodeOverrides(nodes)
+	if err != nil {
+		return nil, err
+	}
+	out, err := r.ReflectComponents(types[:1], overrides) // collectReachable lists root first
 	if err != nil {
 		return nil, err
 	}
 	if base, ok := out[root.Name()]; !ok || base == nil {
 		return nil, fmt.Errorf("apidoc: baseObjectIR: reflector did not emit a component for node %q", root.Name())
-	}
-	nodes, err := collectReachable([]include.Resource{root})
-	if err != nil {
-		return nil, err
-	}
-	nodeNames := make(map[string]include.Resource, len(nodes))
-	for _, n := range nodes {
-		nodeNames[n.Name()] = n
 	}
 	inlined, err := inlineAux(out, nodeNames)
 	if err != nil {
